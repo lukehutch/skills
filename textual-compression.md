@@ -221,56 +221,132 @@ Three warnings, each of which the result depends on:
   a decoding instruction. If a person must read the result, use
   `/compress-text` instead.
 
-## Worked example
+## Worked examples
 
-Original, 113 tokens:
+Three paragraphs of comparable length from different domains, each encoded
+both ways. Token counts are from a common tokenizer, used as a proxy.
 
-> Herd immunity is often misunderstood as a property of an individual, but it
-> is a property of a population. A vaccinated person is protected directly; an
-> unvaccinated person in a highly vaccinated population is protected
-> indirectly, because the chain of transmission breaks before it reaches them.
-> The threshold depends on how contagious the disease is: measles, which is
-> extremely transmissible, requires roughly 95 percent coverage, whereas polio
-> requires about 80 percent. Falling below the threshold does not produce a
-> gradual increase in cases but a sudden return of outbreaks, because
-> transmission is exponential.
+| paragraph                    | original | /compress-text | /ultra-compress-text |
+|------------------------------|----------|----------------|----------------------|
+| tragedy of the commons       | 150      | 147 (1.02x)    | 86 (1.74x)           |
+| B-tree indexes               | 136      | 125 (1.09x)    | 80 (1.70x)           |
+| the Chandrasekhar limit      | 142      | 124 (1.15x)    | 87 (1.63x)           |
 
-`/compress-text`, 102 tokens, 1.11x:
+### Discursive argument — the tragedy of the commons
 
-```
-❓ herd immunity — routinely misread as property of an INDIVIDUAL ∖ of a POPULATION
-   vaccinated: protected directly
-   unvaccinated ∈ highly vaccinated population: protected INDIRECTLY
-      ⇐ chain of transmission breaks before reaching them
-📊 threshold ∝ transmissibility: measles (extremely transmissible) ≈95% coverage | polio ≈80%
-⚠ coverage < threshold ⇏ gradual rise ⇒ SUDDEN return of outbreaks ⇐ transmission exponential
-```
+Original, 150 tokens:
 
-The two relations that are the paragraph's actual claims are the ones carrying
-operators: `∖` holds the misconception apart from the correction, and `⇏`
-blocks the inference from crossing the threshold to a gradual rise. Everything
-else stays in words. Indentation subordinates the two protection cases to the
-population claim, and capitals mark the contrasts the source italicizes in
-effect.
+> Hardin's 1968 essay argued that a shared pasture is inevitably destroyed: each herder gains the full benefit of adding one more animal while bearing only a fraction of the cost of overgrazing, so every rational herder adds animals until the pasture collapses. Hardin concluded that only privatization or state coercion could prevent this. Ostrom's fieldwork overturned the inevitability. Studying irrigation systems, fisheries and alpine pastures that had been managed communally for centuries, she showed that users routinely devise their own rules, monitor each other, and graduate sanctions against violators. The failure case is not shared ownership as such but open access without governance, which is a different arrangement that Hardin had conflated with the commons.
 
-`/ultra-compress-text`, 59 tokens, 1.92x:
+`/compress-text`, 147 tokens, 1.02x:
 
 ```
-❓ herd immunity misread property individual not population vaccinated protected directly
-unvaccinated in highly vaccinated population protected indirectly chain transmission breaks
-before reaching 📊 threshold depends transmissibility measles extremely transmissible 95
-percent coverage polio 80 percent ⚠ below threshold not gradual increase sudden return
-outbreaks transmission exponential
+❓ tragedy of the commons
+🏛 Hardin 1968: shared pasture INEVITABLY destroyed
+   ⇐ herder gains FULL benefit of +1 animal ∧ bears FRACTION of overgrazing cost
+   ⇒ rational herder adds animals until collapse
+   ⇒ remedy: privatization ∨ state coercion ONLY
+🔬 Ostrom fieldwork ⇒ overturns the INEVITABILITY
+   irrigation | fisheries | alpine pastures, communally managed for centuries
+   ⇒ users devise own rules ∧ monitor each other ∧ graduate sanctions on violators
+⚠ failure case = open access without governance ∖ shared ownership
+   ⇒ different arrangement, conflated by Hardin with the commons
 ```
 
-Note the ratios. On one paragraph the hybrid barely compresses at all, because
-layout costs the same whether it organizes six lines or sixty, and a single
-paragraph has few function words to delete relative to its content. The hybrid
-earns its keep over documents, not paragraphs; the ultra form is the one that
-pays at this scale, and it pays by discarding exactly the relational marks that
-made the first version unambiguous. A decoder reading the ultra form must
-infer for itself that "not population" is a correction rather than a denial,
-and that the last clause explains the one before it.
+The operators carry the two relations that are the paragraph's actual content.
+`∖` separates open access from shared ownership, which is the whole point of
+the correction; without it a reader can take Ostrom to be denying Hardin's
+mechanism rather than denying its inevitability. `⇐` marks the herder's
+incentive as the reason for the collapse rather than a further consequence of
+it. The names do heavy work here: "Hardin 1968" and "Ostrom fieldwork" each
+stand for a body of argument a reader can retrieve.
+
+`/ultra-compress-text`, 86 tokens, 1.74x:
+
+```
+❓ tragedy commons 🏛 Hardin 1968 shared pasture inevitably destroyed each herder full benefit one more animal fraction cost overgrazing rational adds until collapse only privatization state coercion prevent 🔬 Ostrom fieldwork overturned inevitability irrigation fisheries alpine pastures communal centuries users devise own rules monitor each other graduate sanctions violators ⚠ failure not shared ownership but open access without governance different arrangement Hardin conflated commons
+```
+
+### Technical explanation — B-tree indexes
+
+Original, 136 tokens:
+
+> A database index turns a full table scan into a lookup. B-trees remain the default because they match the hardware: each node is sized to one disk page, so a tree holding a billion rows is only three or four levels deep, and a lookup costs three or four page reads rather than a million. Nodes stay between half full and full, splitting when they overflow and merging when they underflow, which keeps the tree balanced without periodic rebuilds. The leaves are linked in key order, so a range query walks sideways instead of descending repeatedly. The cost is write amplification: every insert may split nodes up the path, so heavily written tables pay for the reads they accelerate.
+
+`/compress-text`, 125 tokens, 1.09x:
+
+```
+❓ database index: full table scan → lookup
+📊 B-tree default ⇐ matches hardware
+   node = 1 disk page ⇒ 10⁹ rows ≈ 3–4 levels ⇒ lookup ≈ 3–4 page reads ∖ a million
+   nodes between half full ∧ full: split on overflow | merge on underflow ⇒ balanced, ∄ periodic rebuild
+   leaves linked in key order ⇒ range query walks SIDEWAYS ∖ re-descending
+⚠ cost = write amplification: insert may split nodes up the path
+   ⇒ write-heavy tables pay for the reads they accelerate
+```
+
+Note what is not compressed. Every quantity survives intact, because a number
+is already at its shortest expressible form. What goes is the connective
+prose, and the causal chain from page-sized nodes through shallow depth to
+cheap lookups becomes a run of `⇒` rather than three subordinate clauses.
+`∖` marks the contrast the paragraph turns on, three page reads against a
+million.
+
+`/ultra-compress-text`, 80 tokens, 1.70x:
+
+```
+❓ database index full table scan to lookup 📊 B-tree default matches hardware node sized one disk page billion rows three four levels deep lookup three four page reads not million nodes between half full and full split overflow merge underflow balanced without periodic rebuilds leaves linked key order range query walks sideways not descending repeatedly ⚠ cost write amplification insert may split nodes up path heavily written tables pay for reads they accelerate
+```
+
+### Quantitative science — the Chandrasekhar limit
+
+Original, 142 tokens:
+
+> A white dwarf is supported not by heat but by electron degeneracy pressure, a consequence of the Pauli exclusion principle. Chandrasekhar showed in 1930 that this support fails above about 1.44 solar masses, because as the star is compressed the electrons become relativistic and the pressure grows more slowly with density than gravity demands. Above that limit collapse cannot be halted at white dwarf densities, which is why the observed white dwarf masses cluster below it and why type Ia supernovae, produced when an accreting white dwarf approaches it, have a characteristic peak brightness. That uniformity is what makes them standard candles, and it is the basis of the 1998 measurement of cosmic acceleration.
+
+`/compress-text`, 124 tokens, 1.15x:
+
+```
+❓ white dwarf: supported by electron degeneracy pressure ∖ heat ⇐ Pauli exclusion
+📐 Chandrasekhar 1930: support FAILS above ≈1.44 M☉
+   ⇐ compression ⇒ electrons relativistic ⇒ pressure grows with density SLOWER than gravity demands
+   ⇒ above limit: collapse ∄ halt at white dwarf densities
+🧪 ⇒ observed white dwarf masses cluster BELOW it
+   ⇒ type Ia SNe (accreting WD → limit) have characteristic peak brightness
+   ⇒ uniformity ⇒ standard candles ⇒ basis of 1998 cosmic acceleration measurement
+```
+
+This paragraph is a single causal chain ending in an observational payoff, so
+almost all of it renders as nested `⇒`. `∖` again carries a correction the
+reader would otherwise get wrong, that the support is not thermal. The
+subject matter owns some notation of its own here, so `M☉` is kept as the
+field's own symbol rather than replaced.
+
+`/ultra-compress-text`, 87 tokens, 1.63x:
+
+```
+❓ white dwarf supported electron degeneracy pressure not heat Pauli exclusion 📐 Chandrasekhar 1930 support fails above 1.44 solar masses compressed electrons relativistic pressure grows more slowly with density than gravity demands above limit collapse cannot halt white dwarf densities 🧪 observed white dwarf masses cluster below type Ia supernovae accreting white dwarf approaches characteristic peak brightness uniformity standard candles basis 1998 measurement cosmic acceleration
+```
+
+### What these ratios show
+
+At paragraph scale the hybrid barely compresses anything, in any domain, and a
+careless encoding of it will come out longer than the source. Layout costs the
+same whether it organizes six lines or sixty, and one paragraph has few
+function words to delete relative to its content. The hybrid earns its keep
+over documents, where the ratios in the domain table above apply; the ultra
+form is what pays at this scale.
+
+The domain spread visible at document scale does not appear here — the three
+ultra ratios sit within a tenth of each other, and the small differences are
+authoring noise rather than a property of the topics. Redundancy and
+retrievable background need a document's worth of text before they separate.
+
+The ultra form pays by discarding exactly the marks that made the hybrid
+unambiguous. In the first example its reader must work out unaided that
+"not shared ownership but open access" is a correction of Hardin rather than a
+rejection of Ostrom, and in the third that the closing clauses are a causal
+chain rather than a list.
 
 ## Verifying an encoding
 
