@@ -224,19 +224,30 @@ Three warnings, each of which the result depends on:
 ## Worked examples
 
 Three paragraphs of comparable length from different domains, each encoded
-both ways. Token counts are from a common tokenizer, used as a proxy.
+both ways. Token counts are from a common tokenizer, used as a proxy, and
+count the blocks exactly as shown: the line wrapping is part of what is
+measured, and costs the ultra form a few tokens it would not pay as a single
+line.
 
 | paragraph                    | original | /compress-text | /ultra-compress-text |
 |------------------------------|----------|----------------|----------------------|
-| tragedy of the commons       | 150      | 147 (1.02x)    | 86 (1.74x)           |
-| B-tree indexes               | 136      | 125 (1.09x)    | 80 (1.70x)           |
-| the Chandrasekhar limit      | 142      | 124 (1.15x)    | 87 (1.63x)           |
+| tragedy of the commons       | 150      | 147 (1.02x)    | 91 (1.65x)           |
+| B-tree indexes               | 136      | 127 (1.07x)    | 84 (1.62x)           |
+| the Chandrasekhar limit      | 142      | 124 (1.15x)    | 91 (1.56x)           |
 
 ### Discursive argument — the tragedy of the commons
 
 Original, 150 tokens:
 
-> Hardin's 1968 essay argued that a shared pasture is inevitably destroyed: each herder gains the full benefit of adding one more animal while bearing only a fraction of the cost of overgrazing, so every rational herder adds animals until the pasture collapses. Hardin concluded that only privatization or state coercion could prevent this. Ostrom's fieldwork overturned the inevitability. Studying irrigation systems, fisheries and alpine pastures that had been managed communally for centuries, she showed that users routinely devise their own rules, monitor each other, and graduate sanctions against violators. The failure case is not shared ownership as such but open access without governance, which is a different arrangement that Hardin had conflated with the commons.
+> Hardin's 1968 essay argued that a shared pasture is inevitably destroyed: each herder gains the
+> full benefit of adding one more animal while bearing only a fraction of the cost of overgrazing,
+> so every rational herder adds animals until the pasture collapses. Hardin concluded that only
+> privatization or state coercion could prevent this. Ostrom's fieldwork overturned the
+> inevitability. Studying irrigation systems, fisheries and alpine pastures that had been managed
+> communally for centuries, she showed that users routinely devise their own rules, monitor each
+> other, and graduate sanctions against violators. The failure case is not shared ownership as
+> such but open access without governance, which is a different arrangement that Hardin had
+> conflated with the commons.
 
 `/compress-text`, 147 tokens, 1.02x:
 
@@ -261,25 +272,37 @@ incentive as the reason for the collapse rather than a further consequence of
 it. The names do heavy work here: "Hardin 1968" and "Ostrom fieldwork" each
 stand for a body of argument a reader can retrieve.
 
-`/ultra-compress-text`, 86 tokens, 1.74x:
+`/ultra-compress-text`, 91 tokens, 1.65x:
 
 ```
-❓ tragedy commons 🏛 Hardin 1968 shared pasture inevitably destroyed each herder full benefit one more animal fraction cost overgrazing rational adds until collapse only privatization state coercion prevent 🔬 Ostrom fieldwork overturned inevitability irrigation fisheries alpine pastures communal centuries users devise own rules monitor each other graduate sanctions violators ⚠ failure not shared ownership but open access without governance different arrangement Hardin conflated commons
+❓ tragedy commons 🏛 Hardin 1968 shared pasture inevitably destroyed each herder full benefit one
+more animal fraction cost overgrazing rational adds until collapse only privatization state coercion
+prevent 🔬 Ostrom fieldwork overturned inevitability irrigation fisheries alpine pastures communal
+centuries users devise own rules monitor each other graduate sanctions violators ⚠ failure not
+shared ownership but open access without governance different arrangement Hardin conflated commons
 ```
 
 ### Technical explanation — B-tree indexes
 
 Original, 136 tokens:
 
-> A database index turns a full table scan into a lookup. B-trees remain the default because they match the hardware: each node is sized to one disk page, so a tree holding a billion rows is only three or four levels deep, and a lookup costs three or four page reads rather than a million. Nodes stay between half full and full, splitting when they overflow and merging when they underflow, which keeps the tree balanced without periodic rebuilds. The leaves are linked in key order, so a range query walks sideways instead of descending repeatedly. The cost is write amplification: every insert may split nodes up the path, so heavily written tables pay for the reads they accelerate.
+> A database index turns a full table scan into a lookup. B-trees remain the default because they
+> match the hardware: each node is sized to one disk page, so a tree holding a billion rows is
+> only three or four levels deep, and a lookup costs three or four page reads rather than a
+> million. Nodes stay between half full and full, splitting when they overflow and merging when
+> they underflow, which keeps the tree balanced without periodic rebuilds. The leaves are linked
+> in key order, so a range query walks sideways instead of descending repeatedly. The cost is
+> write amplification: every insert may split nodes up the path, so heavily written tables pay for
+> the reads they accelerate.
 
-`/compress-text`, 125 tokens, 1.09x:
+`/compress-text`, 127 tokens, 1.07x:
 
 ```
 ❓ database index: full table scan → lookup
 📊 B-tree default ⇐ matches hardware
    node = 1 disk page ⇒ 10⁹ rows ≈ 3–4 levels ⇒ lookup ≈ 3–4 page reads ∖ a million
-   nodes between half full ∧ full: split on overflow | merge on underflow ⇒ balanced, ∄ periodic rebuild
+   nodes between half full ∧ full: split on overflow | merge on underflow
+      ⇒ balanced, ∄ periodic rebuild
    leaves linked in key order ⇒ range query walks SIDEWAYS ∖ re-descending
 ⚠ cost = write amplification: insert may split nodes up the path
    ⇒ write-heavy tables pay for the reads they accelerate
@@ -292,17 +315,28 @@ cheap lookups becomes a run of `⇒` rather than three subordinate clauses.
 `∖` marks the contrast the paragraph turns on, three page reads against a
 million.
 
-`/ultra-compress-text`, 80 tokens, 1.70x:
+`/ultra-compress-text`, 84 tokens, 1.62x:
 
 ```
-❓ database index full table scan to lookup 📊 B-tree default matches hardware node sized one disk page billion rows three four levels deep lookup three four page reads not million nodes between half full and full split overflow merge underflow balanced without periodic rebuilds leaves linked key order range query walks sideways not descending repeatedly ⚠ cost write amplification insert may split nodes up path heavily written tables pay for reads they accelerate
+❓ database index full table scan to lookup 📊 B-tree default matches hardware node sized one disk
+page billion rows three four levels deep lookup three four page reads not million nodes between half
+full and full split overflow merge underflow balanced without periodic rebuilds leaves linked key
+order range query walks sideways not descending repeatedly ⚠ cost write amplification insert may
+split nodes up path heavily written tables pay for reads they accelerate
 ```
 
 ### Quantitative science — the Chandrasekhar limit
 
 Original, 142 tokens:
 
-> A white dwarf is supported not by heat but by electron degeneracy pressure, a consequence of the Pauli exclusion principle. Chandrasekhar showed in 1930 that this support fails above about 1.44 solar masses, because as the star is compressed the electrons become relativistic and the pressure grows more slowly with density than gravity demands. Above that limit collapse cannot be halted at white dwarf densities, which is why the observed white dwarf masses cluster below it and why type Ia supernovae, produced when an accreting white dwarf approaches it, have a characteristic peak brightness. That uniformity is what makes them standard candles, and it is the basis of the 1998 measurement of cosmic acceleration.
+> A white dwarf is supported not by heat but by electron degeneracy pressure, a consequence of the
+> Pauli exclusion principle. Chandrasekhar showed in 1930 that this support fails above about 1.44
+> solar masses, because as the star is compressed the electrons become relativistic and the
+> pressure grows more slowly with density than gravity demands. Above that limit collapse cannot
+> be halted at white dwarf densities, which is why the observed white dwarf masses cluster below
+> it and why type Ia supernovae, produced when an accreting white dwarf approaches it, have a
+> characteristic peak brightness. That uniformity is what makes them standard candles, and it is
+> the basis of the 1998 measurement of cosmic acceleration.
 
 `/compress-text`, 124 tokens, 1.15x:
 
@@ -322,10 +356,14 @@ reader would otherwise get wrong, that the support is not thermal. The
 subject matter owns some notation of its own here, so `M☉` is kept as the
 field's own symbol rather than replaced.
 
-`/ultra-compress-text`, 87 tokens, 1.63x:
+`/ultra-compress-text`, 91 tokens, 1.56x:
 
 ```
-❓ white dwarf supported electron degeneracy pressure not heat Pauli exclusion 📐 Chandrasekhar 1930 support fails above 1.44 solar masses compressed electrons relativistic pressure grows more slowly with density than gravity demands above limit collapse cannot halt white dwarf densities 🧪 observed white dwarf masses cluster below type Ia supernovae accreting white dwarf approaches characteristic peak brightness uniformity standard candles basis 1998 measurement cosmic acceleration
+❓ white dwarf supported electron degeneracy pressure not heat Pauli exclusion 📐 Chandrasekhar 1930
+support fails above 1.44 solar masses compressed electrons relativistic pressure grows more slowly
+with density than gravity demands above limit collapse cannot halt white dwarf densities 🧪 observed
+white dwarf masses cluster below type Ia supernovae accreting white dwarf approaches characteristic
+peak brightness uniformity standard candles basis 1998 measurement cosmic acceleration
 ```
 
 ### What these ratios show
