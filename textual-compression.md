@@ -329,15 +329,7 @@ per-character charge, and there is no redundant prose left to recover it.
 
 Original, 150 tokens:
 
-> Hardin's 1968 essay argued that a shared pasture is inevitably destroyed: each herder gains the
-> full benefit of adding one more animal while bearing only a fraction of the cost of overgrazing,
-> so every rational herder adds animals until the pasture collapses. Hardin concluded that only
-> privatization or state coercion could prevent this. Ostrom's fieldwork overturned the
-> inevitability. Studying irrigation systems, fisheries and alpine pastures that had been managed
-> communally for centuries, she showed that users routinely devise their own rules, monitor each
-> other, and graduate sanctions against violators. The failure case is not shared ownership as
-> such but open access without governance, which is a different arrangement that Hardin had
-> conflated with the commons.
+> Hardin's 1968 essay argued that a shared pasture is inevitably destroyed: each herder gains the full benefit of adding one more animal while bearing only a fraction of the cost of overgrazing, so every rational herder adds animals until the pasture collapses. Hardin concluded that only privatization or state coercion could prevent this. Ostrom's fieldwork overturned the inevitability. Studying irrigation systems, fisheries and alpine pastures that had been managed communally for centuries, she showed that users routinely devise their own rules, monitor each other, and graduate sanctions against violators. The failure case is not shared ownership as such but open access without governance, which is a different arrangement that Hardin had conflated with the commons.
 
 `/compress-text`, 147 tokens, 1.02x:
 
@@ -391,14 +383,7 @@ shared ownership but open access without governance different arrangement Hardin
 
 Original, 136 tokens:
 
-> A database index turns a full table scan into a lookup. B-trees remain the default because they
-> match the hardware: each node is sized to one disk page, so a tree holding a billion rows is
-> only three or four levels deep, and a lookup costs three or four page reads rather than a
-> million. Nodes stay between half full and full, splitting when they overflow and merging when
-> they underflow, which keeps the tree balanced without periodic rebuilds. The leaves are linked
-> in key order, so a range query walks sideways instead of descending repeatedly. The cost is
-> write amplification: every insert may split nodes up the path, so heavily written tables pay for
-> the reads they accelerate.
+> A database index turns a full table scan into a lookup. B-trees remain the default because they match the hardware: each node is sized to one disk page, so a tree holding a billion rows is only three or four levels deep, and a lookup costs three or four page reads rather than a million. Nodes stay between half full and full, splitting when they overflow and merging when they underflow, which keeps the tree balanced without periodic rebuilds. The leaves are linked in key order, so a range query walks sideways instead of descending repeatedly. The cost is write amplification: every insert may split nodes up the path, so heavily written tables pay for the reads they accelerate.
 
 `/compress-text`, 127 tokens, 1.07x:
 
@@ -448,14 +433,7 @@ split nodes up path heavily written tables pay for reads they accelerate
 
 Original, 142 tokens:
 
-> A white dwarf is supported not by heat but by electron degeneracy pressure, a consequence of the
-> Pauli exclusion principle. Chandrasekhar showed in 1930 that this support fails above about 1.44
-> solar masses, because as the star is compressed the electrons become relativistic and the
-> pressure grows more slowly with density than gravity demands. Above that limit collapse cannot
-> be halted at white dwarf densities, which is why the observed white dwarf masses cluster below
-> it and why type Ia supernovae, produced when an accreting white dwarf approaches it, have a
-> characteristic peak brightness. That uniformity is what makes them standard candles, and it is
-> the basis of the 1998 measurement of cosmic acceleration.
+> A white dwarf is supported not by heat but by electron degeneracy pressure, a consequence of the Pauli exclusion principle. Chandrasekhar showed in 1930 that this support fails above about 1.44 solar masses, because as the star is compressed the electrons become relativistic and the pressure grows more slowly with density than gravity demands. Above that limit collapse cannot be halted at white dwarf densities, which is why the observed white dwarf masses cluster below it and why type Ia supernovae, produced when an accreting white dwarf approaches it, have a characteristic peak brightness. That uniformity is what makes them standard candles, and it is the basis of the 1998 measurement of cosmic acceleration.
 
 `/compress-text`, 124 tokens, 1.15x:
 
