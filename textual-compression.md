@@ -56,6 +56,10 @@ discursive source, by each method:
 | `/ultra-compress-text` | 2291  | 2307  | 353    | 2.85x | 2.83x | 3.57x |
 | `/hanzi-compress-text` | 682   | 1954  | 743    | 9.57x | 3.34x | 1.69x |
 
+Characters and bytes are exact. Token counts come from one common tokenizer
+standing in for whichever one the reader will actually use, so treat the token
+column as approximate and the ranking within it as the durable part.
+
 Read that table before promising a reduction, because the three columns
 disagree about which method wins. Han script is nearly ten times shorter in
 characters and worst but one in tokens. It still leads on bytes, by a smaller
@@ -285,9 +289,11 @@ Follow the `/compress-text` procedure, with four changes.
 3. **Keep proper names in full, in their own script.** Hardin, Ostrom, Pauli,
    dharma, eudaimonia. Shortening the nine philosopher names in the measured
    source to one character each saved 15 characters and cost about a point of
-   recall, concentrated in the claims attached to those names. A name is a
-   pointer into the reader's knowledge and a fragment of it is a weaker
-   pointer; there is nothing to gain by abbreviating one.
+   recall, concentrated in the claims attached to those names. Treat that
+   figure as suggestive rather than settled: it rests on three decodes per
+   variant, and a point is close to the spread. The reasoning is what carries
+   the rule — a name is a pointer into the reader's knowledge, a fragment of
+   it is a weaker pointer, and 15 characters is nothing to buy that risk with.
 4. **Do not gloss ambiguous characters with their English term.** This looks
    like the obvious fix for 义 covering meaning, significance and
    righteousness. It was tried and measured: bracketed English anchors on
