@@ -29,14 +29,14 @@ Two consequences drive everything below.
 compresses in proportion to how much of it is redundant prose plus how much is
 addressable through R2. Measured compression ratios, same method throughout:
 
-| source                          | ratio |
-|---------------------------------|-------|
-| discursive philosophy           | 3.6x  |
-| technical explanation (protocol)| 2.1x  |
-| narrative history               | 1.3x  |
-| pure mathematics                | 1.26x |
-| quantitative science            | 1.13x |
-| theory with defined terms       | 1.04x |
+| source                          | token ratio |
+|---------------------------------|-------------|
+| discursive philosophy           | 3.6x        |
+| technical explanation (protocol)| 2.1x        |
+| narrative history               | 1.3x        |
+| pure mathematics                | 1.26x       |
+| quantitative science            | 1.13x       |
+| theory with defined terms       | 1.04x       |
 
 Ratio falls as the density of irreducible specifics rises. A number, a date, a
 proper noun and a defined term are already at minimum description length:
@@ -44,6 +44,31 @@ proper noun and a defined term are already at minimum description length:
 them. Below about 1.1x the method has stopped compressing and is only
 reformatting; say so rather than claiming a compression that did not happen.
 **Never quote a compression ratio without naming the domain.**
+
+**Characters, bytes and tokens are three different axes, and the methods do
+not rank the same on them.** One encoding of a 6530-character, 1259-token
+discursive source, by each method:
+
+| method                 | chars | bytes | tokens | char  | byte  | token |
+|------------------------|-------|-------|--------|-------|-------|-------|
+| source                 | 6530  | 6530  | 1259   | 1.00x | 1.00x | 1.00x |
+| `/compress-text`       | 3428  | 3621  | 849    | 1.90x | 1.80x | 1.48x |
+| `/ultra-compress-text` | 2291  | 2307  | 353    | 2.85x | 2.83x | 3.57x |
+| `/hanzi-compress-text` | 682   | 1954  | 743    | 9.57x | 3.34x | 1.69x |
+
+Read that table before promising a reduction, because the three columns
+disagree about which method wins. Han script is nearly ten times shorter in
+characters and worst but one in tokens. It still leads on bytes, by a smaller
+margin than the character column suggests, because each Han character costs
+three UTF-8 bytes against one for ASCII, which gives back most of the
+advantage. The Latin methods track each other closely across all three, since
+deleting an English word removes characters, bytes and tokens together.
+
+Ask which axis the user is actually paying for. A display width or a field
+limit is counted in characters; a database column, a network frame or a
+storage bill is counted in bytes; a model context window is counted in tokens.
+Quoting the flattering column and staying quiet about the other two is the
+easiest way to mislead with this skill.
 
 **Omission suppresses the prior; it does not fall back on it.** Leaving out a
 claim because "the decoder knows it" makes the decoder *less* likely to
@@ -225,105 +250,129 @@ Three warnings, each of which the result depends on:
 
 Encode into Han characters plus logic operators and section emoji, with no
 English except proper names and technical terms that have no settled Chinese
-form. Use it when the user asks for a Chinese-script encoding, or wants the
-shortest encoding measured in characters rather than tokens. It is not the
+form. Use it when the user asks for a Chinese-script encoding, or when the
+budget being spent is characters or bytes rather than tokens. It is not the
 method to reach for on fidelity or on token count; both sections below say why.
 
 ### What it is for
 
-The Han script packs a clause into a quarter of the characters Latin script
-needs. Where the constraint is physical space — a line of display, a column, a
-label, anything counted in characters or in screen width — this is the densest
-of the three methods by a wide margin. Where the constraint is tokens, it is
-the worst of the three.
+The Han script packs a clause into a fraction of the characters Latin script
+needs, and the gap is large: on the source measured above, 682 characters
+against 3428 for the hybrid and 2291 for the ultra form. Reach for it when
+the constraint is characters, and when the constraint is bytes it is still the
+leader, though by 3.3x rather than 9.6x. Do not reach for it to save tokens;
+it is the weakest of the three on that axis.
+
+It also costs fidelity. Budget about seven points of claim recall against the
+hybrid, discussed under measured properties below.
 
 ### Encoding procedure
 
 Follow the `/compress-text` procedure, with four changes.
 
-1. **Write modern Mandarin, not classical.** The classical register is tempting
-   because it is shorter: dropping 的, 之 and 是 and using one character per
-   word cuts about a fifth of the characters. Do not. Measured on a 1000-word
-   philosophy source, the classical form scored 89.9 percent recall against the
-   modern form's 91.5, with three times the spread, and the losses were
-   concentrated in exactly the multi-part claims the text was built on. The
-   particles the classical register deletes are what tell the decoder which
-   term stands in which relation to which other term. This is the same result
-   as the general finding that a symbolic encoding needs more room, not less:
-   what buys fidelity is grammatical scaffolding for relations.
-2. **Keep proper names and untranslated technical terms in their own script.**
-   Hardin, Ostrom, Pauli, B树, dharma, eudaimonia, ergon. A name is a pointer
-   into the reader's knowledge, and transliterating it damages the pointer
-   without saving anything: 亚里士多德 costs five tokens where Aristotle costs
-   three.
-3. **Use the same operator set unchanged.** The operators are script-neutral
-   and are doing more work here, not less, because Chinese marks fewer
-   relations grammatically than English does.
+1. **Cut the lexicon hard; leave the relations alone.** One character per
+   content word wherever a single character carries it: 责 for duty, 财 for
+   wealth, 荣 for flourishing, 渺 for insignificance. Drop 的, 之, 是, 而 and
+   every other particle that is not doing semantic work. What must not be cut
+   is the operator scaffolding — the marks that say which term stands in which
+   relation to which. Measured: cutting 40 percent of the characters this way
+   cost between one and two points of recall, while an earlier attempt that
+   also thinned the connective structure cost more for a smaller saving.
+2. **Choose characters that do not collide with grammar.** Prefer 旨 to 目的
+   for purpose: it is one character instead of two, and 目的 ends in the
+   possessive particle, so the decoder must disambiguate it at every
+   occurrence. This consideration outranks which word is more idiomatic.
+3. **Keep proper names in full, in their own script.** Hardin, Ostrom, Pauli,
+   dharma, eudaimonia. Shortening the nine philosopher names in the measured
+   source to one character each saved 15 characters and cost about a point of
+   recall, concentrated in the claims attached to those names. A name is a
+   pointer into the reader's knowledge and a fragment of it is a weaker
+   pointer; there is nothing to gain by abbreviating one.
 4. **Do not gloss ambiguous characters with their English term.** This looks
-   like the obvious fix for 义 covering meaning, significance and righteousness,
-   or 乐 covering happiness, pleasure and joy. It was tried and measured:
-   bracketed English anchors on seven such terms cost 38 tokens, moved the mean
-   recall by less than the noise, and nearly doubled the spread. The decoder
-   was not failing to identify which English word a character stood for; it was
-   failing to carry the relation between terms. Spend the tokens on clause
-   structure instead.
+   like the obvious fix for 义 covering meaning, significance and
+   righteousness. It was tried and measured: bracketed English anchors on
+   seven such terms cost 38 tokens, moved mean recall by less than the noise,
+   and nearly doubled the spread. The decoder was not failing to identify
+   which English word a character stood for; it was failing to carry the
+   relation between terms. Spend on clause structure instead.
 
 ### Decoding
 
 `/decompress-text` applies unchanged. One addition: where a character maps to
-several English terms the source held apart, decide from the relation it stands
-in rather than from the character, and use one English term consistently for it
-throughout the output. Switching between meaning and significance for the same
-character across paragraphs is the characteristic failure of this method.
+several English terms the source held apart, decide from the relation it
+stands in rather than from the character, and use one English term
+consistently for it throughout. Switching between meaning and significance for
+the same character across paragraphs is the characteristic failure here.
 
 ### Measured properties
 
-On a 1042-word discursive philosophy source, against the same source encoded
-the other two ways:
+Four encodings of the same 1042-word discursive source, decoded three times
+each by readers with no access to the original:
 
-| method                 | tokens | ratio | recall | spread |
-|------------------------|--------|-------|--------|--------|
-| `/compress-text`       | 849    | 1.48x | 97.9   | 0.8    |
-| `/ultra-compress-text` | 353    | 3.57x | 96.5   | high   |
-| `/hanzi-compress-text` | 995    | 1.27x | 91.5   | 0.6    |
+| variant                        | chars | tokens | recall | spread |
+|--------------------------------|-------|--------|--------|--------|
+| modern Mandarin, spaced        | 1058  | 996    | 91.5   | 0.6    |
+| classical register             | 848   | 848    | 89.9   | 2.0    |
+| dense, names cut to 1 character| 667   | 727    | 89.3   | 0.2    |
+| **dense, names in full**       | 682   | 743    | 90.5   | 1.3    |
 
-Two things to tell the user before using it.
+The last row is the recommended form and the one the rules above describe. It
+is 36 percent shorter in characters than the first row and within about a
+point of it on recall.
 
-- **It costs about six points of recall.** That is well outside the noise floor
-  and it has reproduced across variants. The cause is that encoding into
-  another language and decoding back out adds a second lossy step that
-  same-language compression does not have, and the mapping is many-to-one in
-  the encoding direction, so the decoder cannot invert it. Its spread is
-  excellent — decoders agree with each other — but they agree on a
-  reconstruction that has lost more.
-- **Below document scale it does not compress; it expands.** The three worked
-  paragraphs below come out at 0.86x, 0.80x and 0.74x, all larger than their
-  English originals. Common tokenizers charge roughly 0.9 tokens per Chinese
-  character against 0.17 per Latin character, which cancels the character
-  advantage outright; on a short technical paragraph there is no redundant
-  prose to remove, so nothing offsets the per-character penalty and the
-  encoding ends up longer than the source. The 1.27x above comes from a long
-  discursive text with a great deal of removable prose. Estimate before
-  promising a ratio, and if the user is counting tokens rather than characters,
-  say plainly that this method will cost them.
+Against the other two methods on the same source, the hybrid scores 97.9 and
+the ultra form 96.5. So the Han method gives up roughly seven points of claim
+recall for its character advantage. Two things to tell the user before using
+it.
+
+- **The loss is real and it reproduced across every variant.** Encoding into
+  another language and decoding back adds a second lossy step that
+  same-language compression does not have, and the mapping is many-to-one
+  going in, so the decoder cannot invert it. The residual failures concentrate
+  in claims that require holding several terms apart across a distance. Note
+  that the spread is good — decoders agree with each other — but they agree on
+  a reconstruction that has lost more, which reads as reliability and is not.
+- **It does not save tokens at any scale, and below document scale it costs
+  them.** The three worked paragraphs below come out at 0.99x, 0.94x and 0.87x
+  in tokens, at or below parity, while running 4 to 5x shorter in characters.
+  A short technical paragraph has no redundant prose to remove, so nothing
+  offsets the tokenizer's per-character charge.
 
 ## Worked examples
 
 Three paragraphs of comparable length from different domains, each encoded
-all three ways. Token counts are from a common tokenizer, used as a proxy, and
-count the blocks exactly as shown: the line wrapping is part of what is
-measured, and costs the ultra form a few tokens it would not pay as a single
-line.
+all three ways and measured on all three axes. Token counts come from a common
+tokenizer used as a proxy, and every count is of the block exactly as shown:
+the line wrapping is part of what is measured, and costs the ultra form a few
+tokens it would not pay as a single line. Character and byte counts exclude
+the newlines.
+
+Tokens, with the source count first:
 
 | paragraph               | original | /compress-text | /ultra-compress-text | /hanzi-compress-text|
 |-------------------------|----------|----------------|----------------------|---------------------|
-| tragedy of the commons  | 150      | 147 (1.02x)    | 91 (1.65x)           | 174 (0.86x)         |
-| B-tree indexes          | 136      | 127 (1.07x)    | 84 (1.62x)           | 171 (0.80x)         |
-| the Chandrasekhar limit | 142      | 124 (1.15x)    | 91 (1.56x)           | 191 (0.74x)         |
+| tragedy of the commons  | 150      | 147 (1.02x)    | 91 (1.65x)           | 151 (0.99x)         |
+| B-tree indexes          | 136      | 127 (1.07x)    | 84 (1.62x)           | 144 (0.94x)         |
+| the Chandrasekhar limit | 142      | 124 (1.15x)    | 91 (1.56x)           | 164 (0.87x)         |
 
-Every entry in the last column is larger than its original. At this length the
-Han script's character advantage is entirely cancelled by the tokenizer's
-per-character charge, and there is no redundant prose left to recover it.
+Characters:
+
+| paragraph               | original | /compress-text | /ultra-compress-text | /hanzi-compress-text|
+|-------------------------|----------|----------------|----------------------|---------------------|
+| tragedy of the commons  | 774      | 587 (1.32x)    | 485 (1.60x)          | 146 (5.30x)         |
+| B-tree indexes          | 683      | 464 (1.47x)    | 461 (1.48x)          | 139 (4.91x)         |
+| the Chandrasekhar limit | 718      | 493 (1.46x)    | 480 (1.50x)          | 174 (4.13x)         |
+
+Bytes, UTF-8:
+
+| paragraph               | original | /compress-text | /ultra-compress-text | /hanzi-compress-text|
+|-------------------------|----------|----------------|----------------------|---------------------|
+| tragedy of the commons  | 774      | 619 (1.25x)    | 495 (1.56x)          | 394 (1.96x)         |
+| B-tree indexes          | 683      | 503 (1.36x)    | 468 (1.46x)          | 405 (1.69x)         |
+| the Chandrasekhar limit | 718      | 531 (1.35x)    | 488 (1.47x)          | 433 (1.66x)         |
+
+The Latin encodings carry a few more bytes than characters because of the
+operators and emoji, which are multi-byte.
 
 ### Discursive argument — the tragedy of the commons
 
@@ -364,19 +413,19 @@ centuries users devise own rules monitor each other graduate sanctions violators
 shared ownership but open access without governance different arrangement Hardin conflated commons
 ```
 
-`/hanzi-compress-text`, 174 tokens, 0.86x:
+`/hanzi-compress-text`, 151 tokens, 0.99x on tokens, 5.30x on characters:
 
 ```
 ❓公地悲剧
-🏛 Hardin 1968：共有牧场必然毁灭
-　⇐ 牧人独得＋1畜之全利 ∧ 只担过牧成本之一分
-　⇒ 理性牧人不断增畜 ⇒ 崩溃
-　⇒ 药方：唯私有化 ∨ 国家强制
-🔬 Ostrom 田野调查 ⇒ 推翻其「必然」
-　灌溉｜渔场｜高山牧场，共同管理数百年
-　⇒ 使用者自订规则 ∧ 相互监督 ∧ 对违者递级惩罚
-⚠ 失败者＝无治理之开放取用 ∖ 共有产权
-　⇒ 二者相异，Hardin 混为一谈
+🏛Hardin1968：共牧场必毁
+　⇐牧人独得＋1畜全利∧仅担过牧成本一分
+　⇒理性牧人增畜⇒崩溃
+　⇒药方：唯私有∨国家强制
+🔬Ostrom田野⇒推翻其必然
+　灌溉｜渔｜高山牧场，共管数百年
+　⇒民自订规∧互监∧对违者递级罚
+⚠败因＝无治理之开放取用∖共有产权
+　⇒二者异，Hardin混为一谈
 ```
 
 ### Technical explanation — B-tree indexes
@@ -415,18 +464,17 @@ order range query walks sideways not descending repeatedly ⚠ cost write amplif
 split nodes up path heavily written tables pay for reads they accelerate
 ```
 
-`/hanzi-compress-text`, 171 tokens, 0.80x:
+`/hanzi-compress-text`, 144 tokens, 0.94x on tokens, 4.91x on characters:
 
 ```
 ❓B树索引
-索引：全表扫描 ⇒ 定点查找
-🔧 仍为默认 ⇐ 契合硬件：节点大小＝一磁盘页
-　⇒ 十亿行之树仅三四层深 ⇒ 查找＝三四次页读 ∖ 百万次
-⚖ 节点保持半满至全满：溢出则分裂，欠载则合并
-　⇒ 树自平衡，无须定期重建
-➡ 叶节点按键序相连 ⇒ 范围查询横向行走 ∖ 反复下降
-💸 代价＝写放大：每次插入或沿路径向上分裂
-　⇒ 重写入之表，为其所加速之读付费
+索引：全表扫描⇒定点查找
+🔧仍为默认⇐合硬件：节点＝一磁盘页
+　⇒十亿行之树仅3~4层⇒查找＝3~4次页读∖百万
+⚖节点半满至全满：溢则裂，欠则并⇒自平衡，无须定期重建
+➡叶按键序相连⇒范围查询横走∖反复下降
+💸代价＝写放大：每插入或沿路径向上裂
+　⇒重写之表，为其所加速之读付费
 ```
 
 ### Quantitative science — the Chandrasekhar limit
@@ -463,17 +511,17 @@ white dwarf masses cluster below type Ia supernovae accreting white dwarf approa
 peak brightness uniformity standard candles basis 1998 measurement cosmic acceleration
 ```
 
-`/hanzi-compress-text`, 191 tokens, 0.74x:
+`/hanzi-compress-text`, 164 tokens, 0.87x on tokens, 4.13x on characters:
 
 ```
-❓钱德拉塞卡极限
-白矮星之支撑＝电子简并压 ∖ 热 ⇐ Pauli 不相容原理
-📉 Chandrasekhar 1930：此支撑失效于 ≈1.44 太阳质量之上
-　⇐ 压缩 ⇒ 电子相对论化 ⇒ 压强随密度之增长 ≺ 引力所需
-⇒ 超此极限，坍缩不能止于白矮星密度
-　⇒ ①实测白矮星质量皆聚于其下
-　　②Ia 型超新星（吸积白矮星趋近该极限时产生）有特征峰值亮度
-✨ 此亮度之一致性 ⇒ 标准烛光 ⇒ 1998 宇宙加速膨胀之测量所本
+❓Chandrasekhar极限
+白矮星撑于电子简并压∖热⇐Pauli不相容
+📉Chandrasekhar1930：撑失效于≳1.44太阳质量
+　⇐压缩⇒电子相对论化⇒压强随密度之增≺引力所需
+⇒超此，坍缩不止于白矮星密度
+　⇒①实测白矮星质量皆聚其下
+　　②Ia超新星（吸积白矮星趋近该极限时生）有特征峰值亮度
+✨此一致性⇒标准烛光⇒1998宇宙加速之测量所本
 ```
 
 ### What these ratios show
@@ -490,12 +538,14 @@ ultra ratios sit within a tenth of each other, and the small differences are
 authoring noise rather than a property of the topics. Redundancy and
 retrievable background need a document's worth of text before they separate.
 
-The Han-script column runs the other way: every entry is larger than the
-English it encodes. Nothing about those three paragraphs is unusual — the
-tokenizer simply charges about five times as much per Chinese character as per
-Latin one, which is close to the character saving the script provides, and at
-paragraph length there is no removable prose to tip the balance. Use that
-method for character count or for the script itself, never for token count.
+The Han-script column behaves differently on each axis, which is the clearest
+demonstration in this file of why the axis has to be named. In tokens it is at
+or below parity, the worst of the three; in characters it wins by a factor of
+four to five, far more than either Latin method manages; in bytes it wins by
+less than two. Same three encodings, three different verdicts. At paragraph
+length there is no removable prose to change any of this, so what remains is
+the arithmetic of the script itself: about a quarter the characters, three
+bytes each, and roughly one token per character.
 
 The ultra form pays by discarding exactly the marks that made the hybrid
 unambiguous. In the first example its reader must work out unaided that
