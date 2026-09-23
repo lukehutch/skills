@@ -52,7 +52,7 @@ If you have to fall back to a weaker model (quota, outage), say so in the round'
 
 ```bash
 pushd $SP/rN/codex >/dev/null || exit 1
-codex exec --model gpt-6-astra -c model_reasoning_effort=max \
+timeout 18000 codex exec --model gpt-6-astra -c model_reasoning_effort=max \
   --dangerously-bypass-approvals-and-sandbox \
   -o LAST.md "<preamble>
 
@@ -70,10 +70,10 @@ popd >/dev/null
 ```bash
 export DISPLAY="" SSH_CLIENT="127.0.0.1 12345 22" SSH_TTY="/dev/pts/0"   # all three, or agy hangs on gnome-keyring
 pushd $SP/rN/gemini >/dev/null || exit 1
-agy -p "<preamble>
+timeout 18000 agy -p "<preamble>
 
 $(cat BRIEFN.md)" --model gemini-3.1-pro-high --effort high \
-  --dangerously-skip-permissions --new-project --print-timeout 140m > RN_GEMINI.log 2>&1 </dev/null
+  --dangerously-skip-permissions --new-project --print-timeout 300m > RN_GEMINI.log 2>&1 </dev/null
 echo "GEMINI DONE rc=$?" >> RN_GEMINI.log
 popd >/dev/null
 ```
@@ -86,7 +86,7 @@ popd >/dev/null
 **Claude**
 
 - Use the Agent tool (`general-purpose`, or `fork` when the agent needs your context), and give it the same brief and working directory.
-- For a separate process that behaves like the other two, run: `claude -p "<preamble> $(cat BRIEFN.md)" --model claude-fable-5-1 --effort max --dangerously-skip-permissions > RN_CLAUDE.log 2>&1 </dev/null`.
+- For a separate process that behaves like the other two, run: `timeout 18000 claude -p "<preamble> $(cat BRIEFN.md)" --model claude-fable-5-1 --effort max --dangerously-skip-permissions > RN_CLAUDE.log 2>&1 </dev/null`.
 - You may take the Claude seat yourself, but write your answer before you read the other agents' reports.
 
 **Preamble** (the same for every agent, with the peer file names changed):
@@ -163,7 +163,7 @@ A disagreement that remains after verification is recorded with both sides and t
 
 ## Lessons from earlier rounds
 
-- Long runs take 30 to 150 minutes. Wrap each call in `timeout` (Codex: `timeout 9000`). When a timeout fires, report it as a timeout and not as a completed run.
+- Long runs take 30 minutes to several hours; a Claude run on 2026-09-23 was still writing its report 2.5 hours in. Give every agent 5 hours: wrap each call in `timeout 18000`, and pass agy `--print-timeout 300m` as well, since agy enforces its own limit. When a timeout fires, report it as a timeout and not as a completed run.
 - Heavy solver jobs started by agents keep running after the agent exits. Find them with `ps -eo pid=,etime=,args=` and decide whether to keep or kill each one.
 - An agent's "exhaustive search found nothing" is only as strong as the search's encoding. Read the encoding before accepting the claim.
 - A solver's failure to converge is not an infeasibility proof. One exact witness overrules it.
