@@ -105,7 +105,7 @@ Always include the last two paragraphs, and from round 2 on the HISTORY.md sente
 
 In this order:
 
-1. **Standing constraints**, repeated verbatim every round. An example is "no hardness conjecture may close a route; only unconditional arguments count".
+1. **Standing constraints**, repeated verbatim every round. An example is "no hardness conjecture may close a route; only unconditional arguments count". When the task is to review a document, the constraints also state the document's purpose and list the results the author wants kept. A reviewer may show that one of those results is wrong, but may not ask to remove it, demote it, or refocus the document on another result.
 2. **The setting.** Define every object, so the brief can be read without any earlier round.
 3. **What is closed.** Give each result with its proof sketch or the script that checks it, so no agent spends a round rebuilding it.
 4. **What is open.** Give numbered questions (Q1, Q2, ...), each with a concrete deliverable: a construction, a proof, or a computed number.
@@ -133,8 +133,10 @@ For each report:
    Agents also find real errors in your own claims, so check those first.
 3. **Score every claim in a table:** claim | agent | your check (command and result) | verdict (confirmed / wrong / unsupported) | effect on the record.
 4. **Record the round in the document**, positive and negative results alike. See section 5.
-5. **Combine the reports and decide on each issue** (the meta-review). Merge objections that are the same issue across agents into one issue with one ID (`I<round>.<n>`, kept for life). For each issue record which agents raised it, the decision (accept, reject, defer) and the reason. Where agents contradict each other, record both sides and the check that decides it.
-6. **Make the edits, smallest first.** Answer an accepted issue with the smallest change that resolves it: correct, cut or rewrite the existing text before adding any. Add a theorem, table, lemma or comparison paragraph only when the issue cannot be resolved without it, and record why. Each addition gives the next round new text to object to, so answering objections by adding material keeps the document growing and the review from converging.
+5. **Combine the reports and decide on each issue** (the meta-review). Merge objections that are the same issue across agents into one issue with one ID (`I<round>.<n>`, kept for life). For each issue record which agents raised it, the decision (accept, reject, defer, refer to the user) and the reason. Where agents contradict each other, record both sides and the check that decides it.
+   - **Accept only what can be checked:** an error, a gap in a proof, a statement that is unclear or unsupported. A request about structure, emphasis or taste is not an error. Refer it to the user with the agents' arguments, and do not apply it yourself. Refer to the user any request to remove, demote or refocus away from a result the standing constraints protect, unless the request shows an error in that result.
+   - **Check each new issue against the history for a reversal:** a request that would undo an earlier accepted edit, bring back text that was cut, or change text recorded as passed. Mark it as a reversal and accept it only with new evidence that the earlier decision was wrong. Record the earlier issue ID next to it.
+6. **Make the edits, smallest first.** Answer an accepted issue with the smallest change that resolves it: correct, rewrite, or cut wrong or redundant text before adding any. Never cut a verified result to satisfy a reviewer. Add a theorem, table, lemma or comparison paragraph only when the issue cannot be resolved without it, and record why. Each addition gives the next round new text to object to, so answering objections by adding material keeps the document growing and the review from converging.
 7. **Update the history** (section 4a) with the round's objections, decisions and edits.
 8. **Write the next brief.** Move the confirmed claims into "closed". Name each agent's errors in that agent's preamble. Give each agent the other agents' reports as PEER files, and a fresh copy of HISTORY.md.
 
@@ -148,15 +150,16 @@ It has two parts.
 
     | ID | raised (round, agents) | short statement | decision | edit (round, location) | status |
 
-Status is one of open, fixed, rejected, deferred, disputed. A fixed issue that a later round finds unresolved goes back to open, with a note naming that round.
+Status is one of open, fixed, rejected, deferred, disputed, referred (to the user). A fixed issue that a later round finds unresolved goes back to open, with a note naming that round.
 
 **One entry per round**, appended and never rewritten:
 
 1. Agents, models and effort used, and any fallback or failed run.
 2. Each agent's objections and claims, one line each, with the agent's location reference and your verdict (confirmed, wrong, unsupported).
-3. The meta-review: which objections were merged into which issue ID, the decision on each issue and the reason, and the disagreements with both sides and the deciding check.
+3. The meta-review: which objections were merged into which issue ID, the decision on each issue and the reason, the disagreements with both sides and the deciding check, the requests referred to the user, and the reversals with the earlier issue each one would undo.
 4. The edits made: for each, the issue ID it answers, the location, a one-line description of the change, and the lines added and removed.
-5. Size of the document under review at the end of the round (lines, or pages for a paper), and the change from the previous round. If it grew, name the edits that caused the growth.
+5. The sections reviewed this round and found sound. An objection to one of them in a later round is treated like an objection to unchanged text (section 3, item 7).
+6. Size of the document under review at the end of the round (lines, or pages for a paper), and the change from the previous round. If it grew, name the edits that caused the growth.
 
 Keep the entry for each round complete enough that an agent who reads only HISTORY.md knows every earlier objection, what was decided about it and what was changed. If the file becomes too long for a brief, compress the entries of old rounds into the issue table, but never drop an issue or a decision.
 
@@ -181,8 +184,17 @@ Keep the entry for each round complete enough that an agent who reads only HISTO
 
 Stop when either of these holds:
 
-- two consecutive rounds produce no new confirmed result, every agent agrees with every verdict you recorded, the issue table has no open or disputed issue, and the last round checked only fixes and raised no new issue; or
+- two consecutive rounds produce no new confirmed result, every agent agrees with every verdict you recorded, the issue table has no open, disputed or referred issue, and the last round checked only fixes and raised no new issue; or
 - the open questions have all been answered or reduced to named, precisely stated problems.
+
+Stop and report to the user, without running another round, when either of these holds:
+
+- the number of open issues has not fallen over the last 3 rounds; or
+- you accepted a reversal (section 4, step 5).
+
+Either one means the review is moving the document around rather than toward a stable version. Report the open issues, the reversals and the requests referred to the user, and let the user decide whether to continue.
+
+One model's acceptance is never a reason to stop, however many times in a row it is given. A model asked the same question again gives a new sample, not a confirmation. Only verified verdicts, agreed across agents from different vendors, count.
 
 A disagreement that remains after verification is recorded with both sides and the deciding computation. It is never averaged. At the end:
 
@@ -198,4 +210,5 @@ A disagreement that remains after verification is recorded with both sides and t
 - A solver's failure to converge is not an infeasibility proof. One exact witness overrules it.
 - When an agent corrects its own earlier claim, record the correction and the reason for it.
 - A paper review in 2026-10 did not converge. Each round was a fresh session with no record of earlier rounds, so independent samples contradicted each other; objections were answered by adding theorems, tables and lemmas, which gave the next round new text to object to and raised the page count; and no round checked only the fixes, so a stable verdict was never separated from new material. Sections 3 (review scope), 4 (steps 5 to 7) and 4a are the corrections.
+- In the same review a single model, run alone for more than 180 rounds with "three acceptances in a row" as the stop test, fixed on one result and had the rest of the paper cut, including results already proved and judged publishable by other agents. It also asked for changes and then asked for them to be reverted, and objected to sections that had passed the round before. The protected results in the standing constraints, the acceptance test and the reversal check in section 4 step 5, and the stop rules in section 6 are the corrections.
 - Never paste secrets, session IDs, or claude.ai URLs into a brief or a report.
