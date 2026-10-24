@@ -22,10 +22,12 @@ A review converges only if all of these hold. The rest of this skill implements 
 2. **The review has a memory.** Agents keep nothing between rounds. The full history
    of issues, arguments and decisions goes into every prompt, so that no agent
    raises again what was decided, or reverses what was fixed.
-3. **The scope shrinks.** Each reviewer reviews each part thoroughly once. After
-   that, only changed text, text whose dependencies changed, and errors of fact are
-   in scope. Without this rule every round finds a new set of small changes to
-   text already reviewed, and no verdict becomes stable.
+3. **The review is monotone.** Each round moves every reviewer toward convergence.
+   So each reviewer is told to report everything it wants changed in a part the
+   first time it reviews that part, and afterward to raise only changed text, text
+   whose dependencies changed, and errors of fact. Without this instruction every
+   round finds a new set of small changes to text already reviewed, and no verdict
+   becomes stable.
 4. **Edits are minimal.** Each new sentence is new text to object to. Answer an
    issue by correcting, rewriting or cutting before adding anything.
 5. **The author decides what the document is for.** The standing constraints list
@@ -331,9 +333,14 @@ every brief:
    - Refer to the user any request about structure, emphasis or taste, and any
      request to remove, demote or refocus away from a protected result, unless it
      shows an error in that result. Do not apply these yourself.
-   - Check each new issue against the history for a reversal, and against the scope
-     rules. Reject out-of-scope requests and record them; name them in that
-     reviewer's next ERRORS file.
+   - Check each new issue against the history for a reversal. The scope rules of
+     section 5b are instructions to the reviewers, so that each one reports every
+     change it wants as early as possible and the open issues only ever decrease.
+     They are not grounds for you to reject an issue: judge a late item on unchanged
+     text on its merits like any other. If it could have been reported in an earlier
+     round and nothing it depends on has changed since, record it as late and name
+     it in that reviewer's next ERRORS file, so that the reviewer front-loads its
+     requests.
 6. **Make the edits, smallest first.**
    - Correct, rewrite or cut before adding. Never cut a verified result to satisfy
      a reviewer. Add a theorem, table or paragraph only when nothing smaller
