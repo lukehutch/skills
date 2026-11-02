@@ -38,7 +38,16 @@ A review converges only if all of these hold. The rest of this skill implements 
 7. **You make errors too.** Your edits are a main source of new issues: a dropped
    qualifier, a sign, a fix recorded but never applied, a repetition. Check your own
    edits as hard as the agents' claims.
-8. **Phase the work.** Settle correctness first, then structure and length, then
+8. **Every agent does exactly the same work.** Give every agent the same brief:
+   every question, every part of the document, every source to read. Never split
+   the document, the questions or the roles among the agents, and never rotate
+   parts. The agents are different models with different strengths and
+   weaknesses, and each misses errors the others catch; a part read by one agent
+   only is a part read by one model only. The value of the review is in the
+   comparison: where the agents disagree, one of them is wrong, and the peer
+   critique in the next round and your own check settle which. A brief may order
+   the work as a checklist, but the checklist is the same for every agent.
+9. **Phase the work.** Settle correctness first, then structure and length, then
    wording. A wording pass before the structure settles polishes text that will be
    cut or rewritten.
 
@@ -87,7 +96,8 @@ project rooted in the repository and write into it.
 **Before each launch, check the prompts.** Confirm that each agent's copy of the
 document is identical to the repository's (`cmp`), that the peer files are present,
 and that every prompt contains this round's new items (grep for the new issue IDs,
-the new commit hash and the new part assignment).
+the new commit hash). Apart from the agent's own name, directory and peer files,
+the prompts must be identical (`diff` them).
 
 ## 3. Launch
 
@@ -161,7 +171,7 @@ If you take the Claude seat yourself, write your report before reading the other
 
 The same for every agent, with its own paths, peers and errors:
 
-> This prompt has three parts: this preamble, the review history of every earlier round, and the brief, which is your task (also in BRIEFN.md in your directory). Read the whole history before the brief. For each issue it gives the arguments for and against a change, the decision, and the change made, with the commit that made it (`git -C <repository> show <hash>`). The directory archive/ holds every earlier brief, every report including your own, and every meta-review. Before raising any objection, check whether it was raised and decided earlier, and cite issues by their IDs. For each issue fixed in the last round, say whether the edit resolves it. Do not raise again an issue marked rejected unless you give new evidence that the recorded reason does not answer. While a piece of text stays unchanged you may ask for a change to it in one round only, so report in this round everything you will ever want changed in your part.
+> This prompt has three parts: this preamble, the review history of every earlier round, and the brief, which is your task (also in BRIEFN.md in your directory). Read the whole history before the brief. For each issue it gives the arguments for and against a change, the decision, and the change made, with the commit that made it (`git -C <repository> show <hash>`). The directory archive/ holds every earlier brief, every report including your own, and every meta-review. Before raising any objection, check whether it was raised and decided earlier, and cite issues by their IDs. For each issue fixed in the last round, say whether the edit resolves it. Do not raise again an issue marked rejected unless you give new evidence that the recorded reason does not answer. While a piece of text stays unchanged you may ask for a change to it in one round only, so report in this round everything you will ever want changed in the text under review.
 >
 > Your directory also contains <each file, one line on what it is or what it computes>. Run and modify the scripts freely, and rebuild any claim you rely on.
 >
@@ -214,12 +224,12 @@ nothing is retyped and nothing stale survives.
    - **Q2, content of the changed text**, as proved, computed, or a stated error
      with its correction.
    - **Q3, writing of the changed text** (section 5a).
-   - **Assigned-part checks.** Split the document into one part per reviewer, and
-     rotate the parts every round, so each part gets a fresh reader and each
-     reviewer sees every part over a full rotation. Give each reviewer its part by
-     line range. A systematic audit belongs here, for example the dimension of
-     every formula that adds or compares two quantities, or every citation against
-     its recorded quote.
+   - **Full-document checks**, the same for every reviewer (principle 8): each
+     reviewer audits the whole document, not a part of it. A systematic audit
+     belongs here, for example the dimension of every formula that adds or
+     compares two quantities, or every citation against its recorded quote. When
+     the document is long, give the audit as an ordered checklist, the same for
+     all.
    - **Missed errors** (section 5b).
    - **Peer reports**: which claims are correct, wrong or unsupported, and which
      writing suggestions the reviewer would apply and why.
@@ -257,10 +267,10 @@ From the second round on, the main task is to check the fixes. Put these rules i
 every brief:
 
 - **One request per unchanged text.** While a piece of text stays unchanged, a
-  reviewer may ask for a change to it in one round only. A part a reviewer was
-  assigned earlier counts as reviewed, though the agent keeps no memory: the
-  history and the archive record what it saw and said. So each reviewer reviews its
-  part thoroughly enough, in one round, to report everything it will ever want
+  reviewer may ask for a change to it in one round only. Text a reviewer reviewed
+  earlier counts as reviewed, though the agent keeps no memory: the history and
+  the archive record what it saw and said. So each reviewer reviews the whole
+  text thoroughly enough, in one round, to report everything it will ever want
   changed there.
 - **Changed text** may be reviewed again, with the sentences next to it.
 - **No changes back and forth.** A request to undo an accepted edit or restore cut
@@ -276,7 +286,7 @@ every brief:
   reported, marked MISSED-ERROR, with the error shown and the reason it was not
   reported earlier. It is recorded against the reviewer that missed it. Wording,
   readability, sentence splits, reordering and taste are never missed errors.
-- **Read your earlier reports first**, and the peers' reports on your part, so that
+- **Read your earlier reports first**, and the peers' reports, so that
   nothing already reported and decided is reported again.
 
 ### 5c. Rules for the report
@@ -420,7 +430,7 @@ does all the bookkeeping:
   into `$SP/library/`;
 - write BRIEF(N+1) from BRIEFN with replacements that each assert the exact number
   of occurrences of the old text: the round number, the new "closed" item, the
-  "what changed" section, Q1, the commit hashes, the part rotation, the range of
+  "what changed" section, Q1, the commit hashes, the range of
   rounds in the missed-error rule, the range of issue IDs;
 - assert that no stale commit hash or round reference remains.
 
@@ -452,8 +462,7 @@ research record:
 
 **Converged** when two consecutive rounds produce no new confirmed issue, every
 agent agrees with every recorded verdict, and nothing is open or disputed. A round
-that made no edit is followed by a confirming round on the same text, with the parts
-rotated, under the scope rules. Referred issues are the author's decisions: they do
+that made no edit is followed by a confirming round on the same text, under the scope rules. Referred issues are the author's decisions: they do
 not hold up convergence, and they go into the final report.
 
 **Stop and report without another round** when the number of open issues has not
