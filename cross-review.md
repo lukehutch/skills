@@ -487,6 +487,8 @@ and convergence count.
 - any warning left that comes from the environment;
 - the claim you consider most likely to be wrong.
 
+**Close the review.** A review is closed only when each reviewer's code is accounted for. The final report lists each change a reviewer made to code as adopted (with its commit), rejected (with the reason) or scheduled (with its plan row). Then save each reviewer's diff and untracked files into the review's directory as a patch, check the patch by a reverse apply, and delete the reviewer's copy in the same step. Reviewers work in plain copies (section 2), never in git worktrees or branches of the repository, so a closed review leaves no checkout or branch behind.
+
 ## 11. Rules for you
 
 - Never paste secrets, session IDs, or chat or artifact URLs into a brief, a
