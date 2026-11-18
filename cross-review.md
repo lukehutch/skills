@@ -136,7 +136,6 @@ popd >/dev/null
 **Gemini (agy)**
 
 ```bash
-export DISPLAY="" SSH_CLIENT="127.0.0.1 12345 22" SSH_TTY="/dev/pts/0"   # or agy hangs on gnome-keyring
 pushd $SP/rN/gemini >/dev/null || exit 1
 python3 -c 'import json,sys; print(json.dumps({"event":"user","message":{"content":sys.stdin.read()}}))' \
   < PROMPT.md > PROMPT.ndjson
