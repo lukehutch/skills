@@ -621,7 +621,8 @@ are what was given to the agents here):
 
 - Run every build, test, clippy run and benchmark on a VM. Only editing, formatting, git and
   the push scripts run on the local machine. A job already running locally may finish there.
-- If no VM can be had (every shape exits 3), wait 2 minutes and try again; do not fall back
+- If no VM can be had (every shape exits 3), wait 15 seconds and try again (the reaper stops a
+  VM idle for 60 s, so a longer wait lets a freed VM be stopped instead of reused); do not fall back
   to running the job locally, or the local machine is overloaded again.
 - **Benchmarks: run a whole scaling series in one job on one VM.** A Colab VM shares its host
   with other users, so a ratio measured across two VMs, or against a local number, means
