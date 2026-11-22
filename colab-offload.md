@@ -194,7 +194,7 @@ with half the threads, down to 1. Record the peak memory with `/usr/bin/time -v`
 t=8
 while :; do
   /usr/bin/time -v -o $n.time timeout 3600 cargo test $line -- --test-threads=$t > $n.log 2>&1; rc=$?
-  if [ $rc -ne 0 ] && [ $t -gt 1 ] && grep -q -E 'SIGKILL|signal: 9|memory allocation of .* failed' $n.log; then
+  if [ $rc -ne 0 ] && [ $rc -ne 124 ] && [ $t -gt 1 ] && grep -q -E 'SIGKILL|signal: 9|memory allocation of .* failed' $n.log; then
     t=$((t / 2)); continue
   fi
   break
@@ -555,7 +555,8 @@ while IFS= read -r line; do
     s=$(date +%s)
     /usr/bin/time -v -o $J/out/$n.time timeout 3600 cargo test $line -- --test-threads=$t < /dev/null > $J/out/$n.log 2>&1; rc=$?
     secs=$(( $(date +%s) - s )); rss=$(awk '/Maximum resident/ {print $6}' $J/out/$n.time)
-    if [ $rc -ne 0 ] && [ $t -gt 1 ] && command grep -a -q -E 'SIGKILL|signal: 9|memory allocation of .* failed|SIGABRT' $J/out/$n.log; then
+    # A timeout (exit 124) is not retried: one test binary killed inside a line that used its whole hour would otherwise cost another hour at half the threads (found by b22-checkwalk5).
+    if [ $rc -ne 0 ] && [ $rc -ne 124 ] && [ $t -gt 1 ] && command grep -a -q -E 'SIGKILL|signal: 9|memory allocation of .* failed|SIGABRT' $J/out/$n.log; then
       printf '%s\t%s\t%s\t%s\t%s\toom-retry\n' "$line" $rc $t $secs "$rss" >> $J/out/summary.tsv; t=$((t / 2)); continue
     fi
     printf '%s\t%s\t%s\t%s\t%s\n' "$line" $rc $t $secs "$rss" >> $J/out/summary.tsv; break
