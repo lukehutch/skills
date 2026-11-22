@@ -199,11 +199,14 @@ awk '/Maximum resident/ {print $6}' $n.time     # peak RSS in kB
 
 This exposed a real problem worth knowing about. One Rust test binary peaked at 40 GB on a
 single thread, and out-of-memory at 51.5 GB with 8 threads, although no single test in it
-used more than 3.0 GB. The cause was glibc's allocator keeping each finished test's freed
-memory in its arenas instead of returning it to the system. Calling `malloc_trim(0)` at the
-end of each test thread (in the test harness only) cut a two-test process from 4.17 GB to
-2.49 GB. If a test binary's peak is far above its largest test, look for this before buying
-a bigger VM.
+used more than 3.0 GB. Measured so far: calling `malloc_trim(0)` at the end of each test
+thread (in the test harness only) cut a two-test process from 4.17 GB to 2.49 GB, so glibc's
+allocator does keep a finished test's freed memory. Not yet shown: that this explains 40 GB.
+With one test thread the tests run one after another and should reuse the same freed memory,
+so a peak 13 times the largest test points also to a leak, an unbounded cache, or many
+allocator arenas from threads the tests start. If a test binary's peak is far above its
+largest test, record the resident memory after each test in one process before buying a
+bigger VM: steady growth means a leak or a cache, a step per new thread means arenas.
 
 ## 5. Shapes, cost and limits
 
@@ -266,28 +269,339 @@ tier's rules (FAQ).
 
 ## 6. A reusable VM pool
 
-Creating a VM per job wastes the setup time, and leaving VMs idle wastes units. A small
-shared pool solved both. The state is a text file, one line per VM:
-`<name> <shape> <busy|idle> <owner> <epoch of last change>`, and every change takes an
-`flock`, so two clients never get the same VM.
+### The problem it solves
 
-- **acquire `<shape>` `<owner>`**: under the lock, take an idle VM of the shape if there is
-  one and mark it busy; otherwise `colab new -s <shape><k> <flags>` with the next free
-  number. If `new` fails (limit reached, `Service Unavailable`), return an error so the
-  caller can wait, try another shape, or run locally.
-- **release `<name>`**: kill the job's process group and delete `/content/job` on the VM,
-  then mark the VM idle with the time.
-- **reap `<seconds>`**: stop every VM idle longer than that. Run it every 15 s from a
-  background loop (`while :; do pool.sh reap 60; sleep 15; done`); a minute of idleness was
-  the rule used here.
-- **list**: print the file.
+Three costs pull against each other when several clients (scripts, or several AI agents
+working at once) send jobs to Colab:
 
-Because the job directory is deleted on release but the toolchain and build cache stay, a
-VM handed from one job to the next keeps its warm build. Keep the pool busy: queue work so
-that a released VM is acquired again within the reap interval.
+1. **Setup is slow, so VMs should be reused.** A new VM has no toolchain and no build
+   cache. Installing Rust took about 1 min and the first build of the workspace 6 to 10.5
+   min; a later job on the same VM rebuilt only what changed. A VM per job pays the cold
+   cost every time.
+2. **Idle VMs cost units, so they should be stopped quickly.** Colab itself left an idle VM
+   running (and billing) for about 45 min.
+3. **Two clients must never use the same VM at once.** Both would write `/content/job`, and
+   each would read the other's results. And the account limit (5 high-mem CPU VMs here)
+   means clients cannot simply each create their own.
+
+The pool answers all three: a VM is created once, handed from job to job with its
+toolchain and build cache intact, given to one client at a time, and stopped after one
+minute with no job.
+
+### How it works
+
+The pool is one text file on the local machine, `pool.tsv`, with one line per live VM:
+
+    <name> <shape> <busy|idle> <owner> <epoch seconds of last change>
+    hm1 hm busy agent-a 1795339365
+    hm2 hm idle - 1795340176
+
+Every change to the file is made while holding an exclusive `flock` on `pool.lock`, so two
+clients that call `acquire` at the same moment cannot both get `hm2`.
+
+A VM moves through these states:
+
+    (none) --acquire, no idle VM of the shape--> colab new --> busy (owner = caller)
+    idle   --acquire------------------------------------------> busy (owner = caller)
+    busy   --release: kill the job, delete /content/job------> idle (time stamped)
+    idle   --reap: idle longer than the limit----------------> colab stop --> (none)
+
+- **`acquire <shape> <owner>`** prints the name of a VM that the caller now holds alone.
+  It takes an idle VM of that shape if there is one, and otherwise creates one named
+  `<shape><k>` with the lowest free `k`. Exit 3 means `colab new` failed (account limit
+  reached, or `Service Unavailable`); the caller then tries another shape, waits, or runs
+  the work locally.
+- **`release <name>`** is called by the client when its job is finished, also when the job
+  failed. On the VM it kills the job's process group (the job wrote its process group id to
+  `/content/job/pgid`) and deletes `/content/job`. It does **not** delete the toolchain
+  (`~/.cargo`, `~/.rustup`) or the build cache (`/content/target`); those are what make the
+  next job fast. Then it marks the VM idle with the current time.
+- **`reap <seconds>`** stops every VM that has been idle longer than `<seconds>` and removes
+  its line. One background loop runs it every 15 s (`reaper.sh` below). A busy VM is never
+  reaped.
+- **`list`** prints the file.
+
+So a VM's life is: created by the first `acquire` of its shape; reused by every later
+`acquire` that comes within a minute of a `release`; stopped one minute after its last
+release. To keep the build cache warm, queue work so that each released VM is acquired
+again within that minute.
+
+### Limits of this design
+
+- **The pool file can disagree with the server.** A VM can be deleted by Colab (idle
+  timeout, maximum lifetime, or a crash) while the file still lists it, or a VM made by
+  hand can be missing from the file. Compare with `colab --auth=adc sessions` from time to
+  time and fix the file. A job sent to a deleted VM fails at its first `exec`.
+- **A client that dies while holding a VM leaves it busy forever,** so the reaper never
+  stops it. Look for busy lines whose epoch is hours old and whose owner is gone, release
+  them, and let the reaper stop them.
+- **`acquire` holds the lock while `colab new` runs.** That is 3 to 5 s for a CPU VM but
+  about 6 min for a TPU v6e-1, during which every other client waits. Keep slow shapes out
+  of the pool, or create them before adding them to the file by hand.
+- **Never `colab stop` a pooled VM by hand,** and never `colab new` outside the pool: the
+  file then counts wrongly against the account limit.
 
 To measure a shape's limit, acquire VMs of that shape until `new` fails, and read
 `colab usage` with each running alone to get its rate. Stop all of them afterward.
+
+### `pool.sh`
+
+```bash
+#!/bin/bash
+# A pool of Colab VMs shared by several local clients. State: $D/pool.tsv, one line per VM:
+#   <name> <shape> <busy|idle> <owner> <epoch of last change>
+# Every change holds an flock on pool.lock, so two agents never get the same VM.
+# Usage:
+#   pool.sh acquire <shape> <owner>   prints a VM name; exit 3 when no VM of that shape can be had
+#   pool.sh release <name>            kills the job, deletes /content/job on the VM, marks it idle
+#   pool.sh reap [seconds]            stops every VM idle longer than <seconds> (default 60)
+#   pool.sh list
+# Every value is checked before use; an empty or malformed one stops the script with exit 2.
+# An empty VM name would make the sed patterns below match every line, and an empty owner would shift the file's columns.
+set -u -o pipefail
+die() { echo "pool.sh: $*" >&2; exit 2; }
+[ -n "${HOME-}" ] || die "HOME is empty"
+D=${COLAB_POOL_DIR:-$HOME/.colab-pool}
+[[ $D == /?* ]] || die "COLAB_POOL_DIR must be an absolute path, got '$D'"
+mkdir -p "$D" || die "cannot create $D"
+P=$D/pool.tsv
+K=$D/pool.lock
+touch "$P" || die "cannot create $P"
+flag() { case $1 in hm) echo --high-mem;; std) echo;; l4) echo --gpu L4;; v5e) echo --tpu V5E1;; *) return 1;; esac; }
+name_ok() { [[ ${1-} =~ ^(hm|std|l4|v5e)[0-9]+$ ]]; }
+now() { local x; x=$(date +%s) && [[ $x =~ ^[0-9]+$ ]] || die "date +%s gave '${x-}'"; echo "$x"; }
+reap() {
+  local lim=$1 now n s st o t
+  [[ $lim =~ ^[0-9]+$ ]] || die "reap: seconds must be a number, got '$lim'"
+  now=$(now) || exit 2
+  while read -r n s st o t; do
+    if ! name_ok "$n" || ! [[ ${t-} =~ ^[0-9]+$ ]]; then
+      echo "pool.sh: skipping malformed line: $n $s $st $o $t" >&2; continue
+    fi
+    if [ "$st" = idle ] && [ $((now - t)) -gt "$lim" ]; then
+      colab --auth=adc stop -s "$n" > /dev/null 2>&1
+      sed -i "/^$n /d" "$P"
+      echo "stopped $n (idle $((now - t)) s)" >&2
+    fi
+  done < <(cat "$P")
+}
+case ${1-} in
+acquire)
+  shape=${2-}; owner=${3-}
+  [ -n "$shape" ] || die "acquire: empty shape"
+  [[ $owner =~ ^[A-Za-z0-9._-]+$ ]] || die "acquire: owner must be a non-empty label without spaces, got '$owner'"
+  f=$(flag "$shape") || die "unknown shape '$shape'"
+  exec 9>"$K"; flock 9 || die "cannot lock $K"
+  ts=$(now) || exit 2
+  n=$(awk -v s="$shape" '$2 == s && $3 == "idle" {print $1; exit}' "$P")
+  if [ -n "$n" ]; then
+    name_ok "$n" || die "malformed VM name '$n' in $P"
+    sed -i "s/^$n .*/$n $shape busy $owner $ts/" "$P"; echo "$n"; exit 0
+  fi
+  k=1; while command grep -a -q "^$shape$k " "$P"; do k=$((k + 1)); done; n=$shape$k
+  name_ok "$n" || die "made a malformed VM name '$n'"
+  # $f is empty for std on purpose (no flag), so it is left unquoted.
+  if colab --auth=adc new -s "$n" $f > "$D/new_$n.log" 2>&1; then
+    echo "$n $shape busy $owner $ts" >> "$P"; echo "$n"; exit 0
+  fi
+  command grep -a -v '@' "$D/new_$n.log" | tail -1 >&2; exit 3;;
+release)
+  n=${2-}
+  name_ok "$n" || die "release: bad VM name '$n'"
+  command grep -a -q "^$n [a-z0-9]* busy " "$P" || die "release: $n is not a busy VM in $P"
+  # Stop the job's process group first (run.sh writes it to /content/job/pgid), so that a job
+  # still running cannot write into the next job's directory. The id must be a number above 1:
+  # `kill -- -1` would kill every process on the VM.
+  printf '%%%%bash\np=$(cat /content/job/pgid 2>/dev/null)\nif [[ $p =~ ^[0-9]+$ ]] && [ "$p" -gt 1 ]; then kill -- -$p; fi\nsleep 2\nrm -rf --one-file-system --preserve-root=all /content/job\n' |
+    timeout 120 colab --auth=adc exec -s "$n" --timeout 100 > /dev/null 2>&1
+  exec 9>"$K"; flock 9 || die "cannot lock $K"
+  ts=$(now) || exit 2
+  sed -i "s/^$n \([a-z0-9]*\) busy .*/$n \1 idle - $ts/" "$P";;
+reap) exec 9>"$K"; flock 9 || die "cannot lock $K"; reap "${2:-60}";;
+list) cat "$P";;
+*) sed -n '2,9p' "$0"; exit 2;;
+esac
+```
+
+### `reaper.sh`
+
+Start it once, in the background, and leave it running while the pool is in use:
+
+```bash
+#!/bin/bash
+# Stops pooled VMs idle for more than 60 s, checking every 15 s.
+set -u
+d=$(dirname "$0") && [ -x "$d/pool.sh" ] || { echo "reaper.sh: no pool.sh next to $0" >&2; exit 2; }
+while :; do "$d/pool.sh" reap 60; sleep 15; done
+```
+
+`nohup ./reaper.sh >> "$HOME/.colab-pool/reaper.log" 2>&1 &`. When all work is done, stop
+the reaper, then check `colab --auth=adc sessions` and stop anything still listed.
+
+### `job.sh`: one test job on a pooled VM
+
+This is the complete job runner used here, generalized. It sends a git checkout (tracked
+and untracked files, not ignored ones) and an optional second directory to the VM, builds,
+runs each line of a tests file with the out-of-memory back-off of section 4, and brings back
+the logs. A tests-file line that starts with `!` is run as a shell command instead (clippy, a
+benchmark with its own flags, a script), once, with no back-off. Adapt the build and test
+commands in `run.sh` to your project.
+
+Every argument is checked before it is used, and an empty or malformed one stops the script
+with exit 2 before anything is created or sent. This matters because an empty variable in a
+path or a pattern does not fail: `sed -i "/^$n /d"` with an empty `n` deletes every line of
+the pool file, and `kill -- -$p` with `p` equal to 1 kills every process on the VM.
+`pool.sh` and `job.sh` therefore start with `set -u -o pipefail`, check each name against a
+pattern, require absolute paths, and accept a process-group id only when it is a number
+greater than 1.
+
+```bash
+#!/bin/bash
+# Runs cargo builds and tests of one git checkout on a pooled Colab VM and brings the logs back.
+# Usage: job.sh <vm> <checkout> <out dir> <tests file> [<extra dir>]
+#   <vm>          a name from `pool.sh acquire`
+#   <checkout>    absolute path of the checkout to test (tracked and untracked, non-ignored files)
+#   <out dir>     absolute path of a new local directory for the logs
+#   <tests file>  one line per run: the arguments after `cargo test`, e.g. `-p mycrate --test foo`,
+#                 or a shell command after a !, e.g. `!cargo clippy --all-targets -- -D warnings`
+#   <extra dir>   optional absolute path of a second git checkout the tests read, given to them
+#                 as EXTRA_DIR
+# Each cargo test line runs with --test-threads=8, and after an out-of-memory kill again at 4, 2,
+# then 1. The VM keeps the toolchain and the build directory /content/target between jobs, so the
+# next job on the same VM builds incrementally; the job's own files are under /content/job, which
+# `pool.sh release` deletes. Output: <out dir>/summary.tsv (line, exit code, threads, seconds,
+# max RSS kB, [oom-retry]) and <out dir>/out/<n>.log per line. Exit 0 when every line passed.
+# Every argument and computed value is checked before use; an empty or malformed one stops the
+# script with exit 2.
+set -u -o pipefail
+die() { echo "job.sh: $*" >&2; exit 2; }
+vm=${1-}; wt=${2-}; out=${3-}; tests=${4-}; extra=${5-}
+[[ $vm =~ ^(hm|std|l4|v5e)[0-9]+$ ]] || die "bad VM name '$vm'; usage: job.sh <vm> <checkout> <out dir> <tests file> [<extra dir>]"
+[[ $wt == /?* ]] && [ -d "$wt" ] || die "checkout '$wt' is not an absolute path of a directory"
+[[ $out == /?* ]] && [ "$out" != / ] || die "out dir '$out' is not an absolute path below /"
+[ -s "$tests" ] || die "tests file '$tests' is missing or empty"
+[ -z "$extra" ] || { [[ $extra == /?* ]] && [ -d "$extra" ]; } || die "extra dir '$extra' is not an absolute path of a directory"
+mkdir -p "$out" || die "cannot create $out"
+# One exec call; the cell comes on stdin; $2 is the local timeout in seconds (default 120).
+c() { local s=${2:-120}; timeout "$s" colab --auth=adc exec -s "$vm" --timeout "$((s - 10))" 2>&1 | command grep -a -v '@'; }
+pushd "$wt" > /dev/null && { git ls-files -z -co --exclude-standard | tar --null -T - -czf "$out/src.tgz" ; } ; popd > /dev/null
+if [ -n "$extra" ]; then
+  pushd "$extra" > /dev/null && { git ls-files -z | tar --null -T - -czf "$out/extra.tgz" ; } ; popd > /dev/null
+  [ -s "$out/extra.tgz" ] || die "packing $extra failed"
+else
+  tar czf "$out/extra.tgz" -T /dev/null || die "cannot write $out/extra.tgz"
+fi
+[ -s "$out/src.tgz" ] || die "packing $wt failed"
+cp "$tests" "$out/tests.txt" || die "cannot copy $tests"
+cat > "$out/run.sh" <<'R'
+#!/bin/bash
+set -u
+J=/content/job; TOKEN=${1-}
+[[ $TOKEN =~ ^[0-9]+$ ]] || { echo "run.sh: bad token '$TOKEN'" >&2; exit 2; }
+[ -n "${HOME-}" ] || { echo "run.sh: HOME is empty" >&2; exit 2; }
+if [ ! -e /content/setup-done ]; then
+  curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none > $J/setup.log 2>&1
+  apt-get install -y -qq time >> $J/setup.log 2>&1
+  touch /content/setup-done
+fi
+source "$HOME/.cargo/env" || { echo "run.sh: no $HOME/.cargo/env" >&2; exit 2; }
+mkdir -p $J/src $J/extra $J/out
+tar xzf $J/src.tgz -C $J/src; tar xzf $J/extra.tgz -C $J/extra
+pushd $J/src > /dev/null || exit 1
+git init -q && git add -A && git -c user.name=job -c user.email=job commit -qm snapshot
+nc=$(nproc); [[ $nc =~ ^[0-9]+$ ]] || nc=1
+export CARGO_TARGET_DIR=/content/target CARGO_BUILD_JOBS=$nc EXTRA_DIR=$J/extra
+s=$(date +%s); cargo test --workspace --no-run > $J/out/build.log 2>&1; echo "build rc=$? secs=$(( $(date +%s) - s ))" >> $J/out/build.log
+n=0
+while IFS= read -r line; do
+  [ -z "$line" ] && continue; n=$((n + 1)); t=8
+  # A line starting with ! is a shell command run in the checkout's root (clippy, a benchmark
+  # with its own flags, a script), once, with no out-of-memory retry.
+  if [ "${line#!}" != "$line" ]; then
+    [ -n "${line#!}" ] || { printf '%s\t2\t0\t0\t\n' "$line" >> $J/out/summary.tsv; continue; }
+    s=$(date +%s)
+    /usr/bin/time -v -o $J/out/$n.time timeout 3600 bash -c "${line#!}" < /dev/null > $J/out/$n.log 2>&1; rc=$?
+    secs=$(( $(date +%s) - s )); rss=$(awk '/Maximum resident/ {print $6}' $J/out/$n.time)
+    printf '%s\t%s\t%s\t%s\t%s\n' "$line" $rc 0 $secs "$rss" >> $J/out/summary.tsv; continue
+  fi
+  while :; do
+    s=$(date +%s)
+    /usr/bin/time -v -o $J/out/$n.time timeout 3600 cargo test $line -- --test-threads=$t < /dev/null > $J/out/$n.log 2>&1; rc=$?
+    secs=$(( $(date +%s) - s )); rss=$(awk '/Maximum resident/ {print $6}' $J/out/$n.time)
+    if [ $rc -ne 0 ] && [ $t -gt 1 ] && command grep -a -q -E 'SIGKILL|signal: 9|memory allocation of .* failed|SIGABRT' $J/out/$n.log; then
+      printf '%s\t%s\t%s\t%s\t%s\toom-retry\n' "$line" $rc $t $secs "$rss" >> $J/out/summary.tsv; t=$((t / 2)); continue
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\n' "$line" $rc $t $secs "$rss" >> $J/out/summary.tsv; break
+  done
+done < $J/tests.txt
+popd > /dev/null
+tar czf $J/out.tgz -C $J out; touch $J/DONE-$TOKEN
+R
+printf '%%%%bash\nmkdir -p /content/job\n' | c > /dev/null
+for f in src.tgz extra.tgz tests.txt run.sh; do
+  timeout 600 colab --auth=adc upload -s "$vm" "$out/$f" "/content/job/$f" 2>&1 | command grep -a -v '@' | tail -1
+done
+# Each job has its own token, so a DONE file left by an earlier job cannot end this one's wait.
+# setsid gives run.sh its own process group, whose id `pool.sh release` kills.
+tok=$(date +%s%N)
+[[ $tok =~ ^[0-9]+$ ]] || die "bad token '$tok'"
+# A dropped connection can lose the launch command (2026-11-22, t3: "Connection was lost"), so the
+# launch is confirmed by a separate call that sees the pgid file, and retried up to 3 times.
+for try in 1 2 3; do
+  printf '%%%%bash\n[ -s /content/job/pgid ] || { setsid nohup bash /content/job/run.sh %s > /content/job/run.log 2>&1 & echo $! > /content/job/pgid; }\n' "$tok" | c > /dev/null
+  printf '%%%%bash\n[ -s /content/job/pgid ] && echo "LAUNCH""ED"\n' | c 60 | command grep -a -q LAUNCHED && break
+  [ $try = 3 ] && { echo "launch failed on $vm"; exit 4; }
+  sleep 10
+done
+# Wait for DONE. A failed poll (connection lost) is retried; a job process that is gone with no
+# DONE file ends the wait with exit 5, so a dead job never makes this loop run forever. An empty
+# or non-numeric pgid counts as dead: `kill -0` with no argument would only print an error.
+while :; do
+  r=$(printf '%%%%bash\np=$(cat /content/job/pgid 2>/dev/null)\nif [ -e /content/job/DONE-%s ]; then echo "JOB""DONE"; elif [[ $p =~ ^[0-9]+$ ]] && kill -0 "$p" 2>/dev/null; then echo "RUN""NING"; elif [ -e /content/job/DONE-%s ]; then echo "JOB""DONE"; else echo "JOB""DEAD"; fi\n' "$tok" "$tok" | c 60)
+  case $r in *JOBDONE*) break;; *JOBDEAD*) echo "job died on $vm"; printf '%%%%bash\ntail -20 /content/job/run.log\n' | c; exit 5;; esac
+  sleep 20
+done
+timeout 600 colab --auth=adc download -s "$vm" /content/job/out.tgz "$out/out.tgz" 2>&1 | command grep -a -v '@' | tail -1
+tar xzf "$out/out.tgz" -C "$out" && cp "$out/out/summary.tsv" "$out/summary.tsv" || die "no results in $out/out.tgz"
+cat "$out/summary.tsv"; tail -1 "$out/out/build.log"
+awk -F'\t' '$6 == "" && $2 != 0 {bad = 1} END {exit bad}' "$out/summary.tsv"
+```
+
+The job runs as root on the VM, so the `rm -rf` in `pool.sh release` is written with a
+literal path and `--one-file-system --preserve-root=all`; keep it that way if you edit it.
+
+### One job, start to finish
+
+```bash
+O=$HOME/colab-runs/run-1; mkdir -p "$O"
+printf '%s\n' '-p mycrate --test big_tests' '-p othercrate' '!cargo clippy --all-targets -- -D warnings' > "$O.tests"
+vm=$(./pool.sh acquire hm me) || vm=$(./pool.sh acquire l4 me) || { echo "no VM free; try again in 2 min"; exit 1; }
+[ -n "$vm" ] || { echo "pool.sh printed no VM name"; exit 1; }
+./job.sh "$vm" "$PWD" "$O" "$O.tests" > "$O.log" 2>&1; echo "job rc=$?"
+./pool.sh release "$vm"          # always, also after a failure
+cat "$O/summary.tsv"
+```
+
+### Instructions to give AI agents that use the pool
+
+When several AI agents share the pool, each one needs these rules in its instructions (they
+are what was given to the agents here):
+
+- Run every build, test, clippy run and benchmark on a VM. Only editing, formatting, git and
+  the push scripts run on the local machine. A job already running locally may finish there.
+- If no VM can be had (every shape exits 3), wait 2 minutes and try again; do not fall back
+  to running the job locally, or the local machine is overloaded again.
+- **Benchmarks: run a whole scaling series in one job on one VM.** A Colab VM shares its host
+  with other users, so a ratio measured across two VMs, or against a local number, means
+  nothing. A ratio that fails is run once more on the same VM before it is analyzed; report
+  both runs.
+- Get VMs only through `pool.sh acquire`, never `colab new`; return them only through
+  `pool.sh release`, never `colab stop`. Release also after a failure. Hold one VM at a time.
+- Run `job.sh` in the background and keep working; do not poll it.
+- Read `summary.tsv`; analyze a failure on the VM like a local one, including failures that
+  do not happen locally (memory, thread count, a host path, a missing tool).
+- Never put a credential, token or email address on a VM, in a tests file or in a kept log;
+  filter `@` lines from anything `colab` prints.
 
 ## 7. Privacy
 
@@ -329,4 +643,9 @@ for offloading:
 | A misspelled `--gpu` value | Silently gives an A100 (the most expensive shape) | Check the shape with `colab sessions` after `new` |
 | Reading the cost of a job from `colab usage` | The balance had not moved yet | Rate table × lifetime |
 | Leaving a VM idle "to stop by itself" | Still billing after 45 min | The reaper (section 6) |
-| 8 test threads on a 50 GB VM | Out-of-memory | Thread back-off; and the allocator fix in section 4 |
+| 8 test threads on a 50 GB VM | Out-of-memory | Thread back-off; the cause of the peak is open (section 4) |
+| Editing `job.sh` in place while jobs ran it | bash reads a script as it runs, so a running job can read the new text at its old offset and run half a command | Write `job.sh.new`, test it, then `mv` it over the old one: a running job keeps the old file (`/proc/<pid>/fd/255` shows it as deleted) |
+| `pgrep -f '<pattern>'` to find a job | Matched the shell running the `pgrep` command itself, whose command line contains the pattern | Record the job's pid when it starts, or look a pid up with `ps -o pid,args -p <pid>` |
+| An empty variable in `sed -i "/^$n /d"` | Would delete every line of the pool file | Check every value against a pattern first; `set -u` (section 6) |
+| `kill -- -$(cat pgid)` | A pgid file holding 1 would kill every process on the VM | Accept only a number greater than 1 |
+| `--tpu v5e1` | Not in `colab new --help`, which lists `V5E1` and `V6E1` | Use the spelling the help lists |
