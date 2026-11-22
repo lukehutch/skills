@@ -214,8 +214,10 @@ The pattern that worked:
      poller loop forever.
 5. **Have the job pack its results** into one tarball, then write the done file last. Download
    the tarball and unpack it locally.
-6. **Clean up per job, not per VM**: kill the job's process group (`kill -- -$(cat pgid)`),
-   then delete `/content/job`. Keep the toolchain and build cache (for example
+6. **Clean up per job, not per VM**: kill the job's session (`pkill -s $(cat pgid)`; the job
+   was started with `setsid`), not only its process group: a `timeout` inside the job moves its
+   command into a process group of its own, which `kill -- -$(cat pgid)` does not reach. Then
+   delete `/content/job`. Keep the toolchain and build cache (for example
    `CARGO_TARGET_DIR=/content/target`) so the next job on the same VM builds incrementally.
    When jobs from different checkouts share that cache, never build in the freshly unpacked
    copy: `tar` restores the original mtimes, so a file edited before another checkout's last
@@ -379,8 +381,15 @@ again within that minute.
 
 - **The pool file can disagree with the server.** A VM can be deleted by Colab (idle
   timeout, maximum lifetime, or a crash) while the file still lists it, or a VM made by
-  hand can be missing from the file. Compare with `colab --auth=adc sessions` from time to
-  time and fix the file. A job sent to a deleted VM fails at its first `exec`.
+  hand can be missing from the file. `acquire`, `release` and `reap` therefore read the VM
+  names in `colab --auth=adc sessions` (names only; the list also holds each VM's endpoint)
+  and delete an idle line whose VM is not there, and `release` deletes its own line in that
+  case instead of marking it idle. Before this, a VM that left the list was marked idle at
+  its release and handed to the next client, whose job failed 3 times at the clearing
+  (2026-11-22). When the list cannot be read, nothing is deleted. Every `exec` to a deleted
+  VM prints `[colab] Session '<name>' not found.` and exits 1 at once; `job.sh` below ends the
+  job with exit 5 on it. A VM made by hand that is missing from the file is still yours to
+  find: compare with `colab --auth=adc sessions` from time to time.
 - **A client that dies while holding a VM leaves it busy forever,** so the reaper never
   stops it. Look for busy lines whose epoch is hours old and whose owner is gone, release
   them, and let the reaper stop them.
@@ -407,6 +416,7 @@ To measure a shape's limit, acquire VMs of that shape until `new` fails, and rea
 #   pool.sh release <name>            kills the job, deletes /content/job on the VM, marks it idle
 #   pool.sh reap [seconds]            stops every VM idle longer than <seconds> (default 60)
 #   pool.sh list
+# acquire, release and reap first delete each VM gone from the Colab session list (see live).
 # Every value is checked before use; an empty or malformed one stops the script with exit 2.
 # An empty VM name would make the sed patterns below match every line, and an empty owner would shift the file's columns.
 set -u -o pipefail
@@ -424,10 +434,33 @@ touch "$P" || die "cannot create $P"
 flag() { case $1 in hm) echo --high-mem;; std) echo;; l4) echo --gpu L4;; v5e) echo --tpu V5E1;; *) return 1;; esac; }
 name_ok() { [[ ${1-} =~ ^(hm|std|l4|v5e)[0-9]+$ ]]; }
 now() { local x; x=$(date +%s) && [[ $x =~ ^[0-9]+$ ]] || die "date +%s gave '${x-}'"; echo "$x"; }
+# A VM can drop out of the Colab session list while pool.tsv still holds it. live prints the
+# names in `colab sessions`, one a line, and nothing else of that list (it holds the endpoints);
+# it fails when the list could not be read, and then no line is deleted for want of a name. An
+# empty list reads "No active sessions found".
+live() {
+  local t
+  t=$(colab --auth=adc sessions 2>&1) || return 1
+  command grep -a -q -E '^\[[a-z0-9]+\] |No active sessions found' <<<"$t" || return 1
+  command grep -a -o -E '^\[[a-z0-9]+\] ' <<<"$t" | tr -d '[] ' | command grep -a -E '^(hm|std|l4|v5e)[0-9]+$'
+  return 0
+}
+# prune <names>: deletes each idle line whose VM is not in <names> (the output of live). A busy line
+# is left to its owner's release, which deletes it the same way.
+prune() {
+  local n s st o t
+  while read -r n s st o t; do
+    name_ok "$n" && [ "$st" = idle ] || continue
+    command grep -a -q -x "$n" <<<"$1" && continue
+    sed -i "/^$n /d" "$P"
+    echo "pool.sh: $n is gone from the Colab session list; deleted from $P" >&2
+  done < <(cat "$P")
+}
 reap() {
-  local lim=$1 now n s st o t
+  local lim=$1 now n s st o t names
   [[ $lim =~ ^[0-9]+$ ]] || die "reap: seconds must be a number, got '$lim'"
   now=$(now) || exit 2
+  if names=$(live); then prune "$names"; else echo "pool.sh: cannot read the Colab session list; no VM deleted for want of it" >&2; fi
   while read -r n s st o t; do
     if ! name_ok "$n" || ! [[ ${t-} =~ ^[0-9]+$ ]]; then
       echo "pool.sh: skipping malformed line: $n $s $st $o $t" >&2; continue
@@ -455,6 +488,9 @@ acquire)
     [ -z "$h" ] || { echo "pool.sh: $owner already holds $h; run the next job on it, or release it first" >&2; exit 4; }
   fi
   ts=$(now) || exit 2
+  # No VM gone from the session list is handed out. When the list cannot be read, an idle VM is
+  # still handed out; job.sh then ends with exit 5 if it is gone.
+  if names=$(live); then prune "$names"; else echo "pool.sh: cannot read the Colab session list" >&2; fi
   n=$(awk -v s="$shape" '$2 == s && $3 == "idle" {print $1; exit}' "$P")
   if [ -n "$n" ]; then
     name_ok "$n" || die "malformed VM name '$n' in $P"
@@ -472,17 +508,25 @@ release)
   n=${2-}
   name_ok "$n" || die "release: bad VM name '$n'"
   command grep -a -q "^$n [a-z0-9]* busy " "$P" || die "release: $n is not a busy VM in $P"
-  # Stop the job's process group first (run.sh writes it to /content/job/pgid), so that a job
-  # still running cannot write into the next job's directory. The id must be a number above 1:
-  # `kill -- -1` would kill every process on the VM.
-  printf '%%%%bash\np=$(cat /content/job/pgid 2>/dev/null)\nif [[ $p =~ ^[0-9]+$ ]] && [ "$p" -gt 1 ]; then kill -- -$p; fi\nsleep 2\nrm -rf --one-file-system --preserve-root=all /content/job\n' |
+  # A VM gone from the session list is deleted, not marked idle.
+  if names=$(live) && ! command grep -a -q -x "$n" <<<"$names"; then
+    exec 9>"$K"; flock 9 || die "cannot lock $K"
+    sed -i "/^$n /d" "$P"
+    echo "pool.sh: $n is gone from the Colab session list; deleted from $P" >&2; exit 0
+  fi
+  # Stop the job first (run.sh's pid, in /content/job/pgid, is the session of every process of the
+  # job: job.sh starts it with setsid), so that a job still running cannot write into the next
+  # job's directory. By session, not by process group: run.sh runs each line under `timeout`,
+  # which moves the line into a process group of its own, so `kill -- -<pgid>` left it running
+  # (2026-11-22). The id must be a number above 1: `pkill -s 0` is this cell's own session.
+  printf '%%%%bash\np=$(cat /content/job/pgid 2>/dev/null)\nif [[ $p =~ ^[0-9]+$ ]] && [ "$p" -gt 1 ]; then pkill -s $p; fi\nsleep 2\nrm -rf --one-file-system --preserve-root=all /content/job\n' |
     timeout 120 colab --auth=adc exec -s "$n" --timeout 100 > /dev/null 2>&1
   exec 9>"$K"; flock 9 || die "cannot lock $K"
   ts=$(now) || exit 2
   sed -i "s/^$n \([a-z0-9]*\) busy .*/$n \1 idle - $ts/" "$P";;
 reap) exec 9>"$K"; flock 9 || die "cannot lock $K"; reap "${2:-60}";;
 list) cat "$P";;
-*) sed -n '2,9p' "$0"; exit 2;;
+*) sed -n '2,10p' "$0"; exit 2;;
 esac
 ```
 
@@ -513,7 +557,8 @@ commands in `run.sh` to your project.
 Every argument is checked before it is used, and an empty or malformed one stops the script
 with exit 2 before anything is created or sent. This matters because an empty variable in a
 path or a pattern does not fail: `sed -i "/^$n /d"` with an empty `n` deletes every line of
-the pool file, and `kill -- -$p` with `p` equal to 1 kills every process on the VM.
+the pool file, `kill -- -$p` with `p` equal to 1 kills every process on the VM, and
+`pkill -s $p` with `p` equal to 0 kills the caller's own session.
 `pool.sh` and `job.sh` therefore start with `set -u -o pipefail`, check each name against a
 pattern, require absolute paths, and accept a process-group id only when it is a number
 greater than 1.
@@ -536,7 +581,9 @@ greater than 1.
 # build directory /content/target between jobs, and the last job's files as /content/src and
 # /content/extra (see run.sh), so the next job on the same VM builds incrementally; the job's own
 # files are under /content/job, which `pool.sh release` deletes. Output: <out dir>/summary.tsv (line, exit code, threads, seconds,
-# max RSS kB, [oom-retry or dylib-retry]) and <out dir>/out/<n>.log per line. Exit 0 when every line passed.
+# max RSS kB, [oom-retry or dylib-retry]) and <out dir>/out/<n>.log per line. Exit 0 when every line passed;
+# 4 the clearing or the launch failed; 5 the job died or its VM left the Colab session list; 6 an
+# upload failed; 7 the job passed JOB_LIMIT or stalled for JOB_STALL seconds (see the wait below).
 # Every argument and computed value is checked before use; an empty or malformed one stops the
 # script with exit 2.
 set -u -o pipefail
@@ -556,8 +603,17 @@ mkdir -p "$out" || die "cannot create $out"
 # each URL by <url removed>, since a failed upload prints a URL whose query carries a runtime-proxy
 # token.
 scrub() { command grep -a -v '@' | sed -E 's#[a-z]+://[^[:space:]]*#<url removed>#g'; }
-# One exec call; the cell comes on stdin; $2 is the local timeout in seconds (default 120).
-c() { local s=${2:-120}; timeout "$s" colab --auth=adc exec -s "$vm" --timeout "$((s - 10))" 2>&1 | scrub; }
+# One exec call; the cell comes on stdin; $2 is the local timeout in seconds (default 120). -k 5
+# sends KILL 5 s after the TERM, so a colab that ignores the TERM cannot outlive its limit.
+c() { local s=${2:-120}; timeout -k 5 "$s" colab --auth=adc exec -s "$vm" --timeout "$((s - 10))" 2>&1 | scrub; }
+# A VM that dropped out of the Colab session list never answers again: colab prints
+# "[colab] Session '<name>' not found." (colab_cli/common.py get_session) or "... appears to be
+# lost (404/401). Cleaning up." (commands/execution.py exec_command) and exits 1 at once. The wait
+# below took that for a lost connection and polled every 20 s with no end, once for about 10 hours
+# (2026-11-22). gone <text> is true for either message; the clearing, the launch, the progress
+# copy and the poll all end the job with exit 5 on it.
+gone() { command grep -a -q -E "Session '[^']*' (not found|appears to be lost)" <<<"$1"; }
+vanished() { echo "job died on $vm: job.sh: the VM is gone from the Colab session list ($1)"; exit 5; }
 pushd "$wt" > /dev/null && { git ls-files -z -co --exclude-standard | tar --null -T - -czf "$out/src.tgz" ; } ; popd > /dev/null
 if [ -n "$extra" ]; then
   pushd "$extra" > /dev/null && { git ls-files -z | tar --null -T - -czf "$out/extra.tgz" ; } ; popd > /dev/null
@@ -711,8 +767,11 @@ R
 # confirmed by a separate call and tried 3 times: a lost clearing call (another exec call held the
 # same kernel) left the old files and gave the same "job died" with no run.
 for try in 1 2 3; do
-  printf '%%%%bash\np=$(cat /content/job/pgid 2>/dev/null)\nif [[ $p =~ ^[0-9]+$ ]] && [ "$p" -gt 1 ]; then kill -- -$p 2>/dev/null; sleep 2; fi\nrm -rf --one-file-system --preserve-root=all /content/job\nmkdir -p /content/job\n' | c > /dev/null
-  printf '%%%%bash\n[ -d /content/job ] && [ ! -e /content/job/pgid ] && echo "CLEA""RED"\n' | c 60 | command grep -a -q CLEARED && break
+  r=$(printf '%%%%bash\np=$(cat /content/job/pgid 2>/dev/null)\nif [[ $p =~ ^[0-9]+$ ]] && [ "$p" -gt 1 ]; then pkill -s $p; sleep 2; fi\nrm -rf --one-file-system --preserve-root=all /content/job\nmkdir -p /content/job\n' | c)
+  gone "$r" && vanished "while clearing the previous job"
+  r=$(printf '%%%%bash\n[ -d /content/job ] && [ ! -e /content/job/pgid ] && echo "CLEA""RED"\n' | c 60)
+  gone "$r" && vanished "while clearing the previous job"
+  command grep -a -q CLEARED <<<"$r" && break
   [ $try = 3 ] && { echo "job.sh: clearing the previous job on $vm failed 3 times" >&2; exit 4; }
   sleep 10
 done
@@ -741,8 +800,11 @@ tok=$(date +%s%N)
 # A dropped connection can lose the launch command (2026-11-22, t3: "Connection was lost"), so the
 # launch is confirmed by a separate call that sees the pgid file, and retried up to 3 times.
 for try in 1 2 3; do
-  printf '%%%%bash\n[ -s /content/job/pgid ] || { setsid nohup bash /content/job/run.sh %s %s > /content/job/run.log 2>&1 & echo $! > /content/job/pgid; }\n' "$tok" "$prebuild" | c > /dev/null
-  printf '%%%%bash\n[ -s /content/job/pgid ] && echo "LAUNCH""ED"\n' | c 60 | command grep -a -q LAUNCHED && break
+  r=$(printf '%%%%bash\n[ -s /content/job/pgid ] || { setsid nohup bash /content/job/run.sh %s %s > /content/job/run.log 2>&1 & echo $! > /content/job/pgid; }\n' "$tok" "$prebuild" | c)
+  gone "$r" && vanished "at the launch"
+  r=$(printf '%%%%bash\n[ -s /content/job/pgid ] && echo "LAUNCH""ED"\n' | c 60)
+  gone "$r" && vanished "at the launch"
+  command grep -a -q LAUNCHED <<<"$r" && break
   [ $try = 3 ] && { echo "launch failed on $vm"; exit 4; }
   sleep 10
 done
@@ -754,15 +816,52 @@ done
 # of out/build.log and of the newest line log, so a long job can be followed without waiting for its
 # end. Counted with $SECONDS, not in polls: an exec call can return only when its timeout ends it
 # (60 s on l43, 2026-11-22), so a poll can take 80 s and a count of polls says little about time.
+# Two limits end a job that would otherwise be waited on for ever, each with exit 7, after the
+# job's process group on the VM is killed (one call; the VM may not answer):
+# - the job limit, JOB_LIMIT seconds from the launch: by default 3600 for the setup and the build
+#   (a cold build of a large workspace took 3764 s on a 2-core std VM and about 6 min on hm)
+#   plus 3600 for each line, the limit run.sh puts on one try of a line;
+# - the stall limit, JOB_STALL seconds (default 1800) in which no poll got an answer, or the bytes
+#   under /content/job/out did not change. cargo writes a line per crate built and per test run,
+#   so half an hour with no new byte is a hung build, a hung test or a VM that no longer answers
+#   (raise it for a project with tests that run longer silent). A poll that fails for any other
+#   reason than a gone session (a lost connection) is still retried, up to this limit.
+# Each copy of the progress also prints one line, so the caller's log of this script grows while
+# the job runs. Both limits are read once and checked as numbers; a test with a fake colab (a
+# script named colab first on PATH) sets them small.
+lines=$(command grep -a -c . "$tests")
+[[ $lines =~ ^[0-9]+$ ]] || die "cannot count the lines of $tests"
+limit=${JOB_LIMIT:-$((3600 + 3600 * lines))}
+stall=${JOB_STALL:-1800}
+[[ $limit =~ ^[0-9]+$ ]] && [[ $stall =~ ^[0-9]+$ ]] || die "JOB_LIMIT '$limit' or JOB_STALL '$stall' is not a number of seconds"
+# The job is stopped by its session, not its process group: run.sh runs each line under
+# `timeout`, which puts itself and the line in a process group of its own, so `kill -- -<pgid>`
+# left the line running (2026-11-22), while setsid makes run.sh's pid the session of every
+# process of the job. The id must be above 1: `pkill -s 0` is the caller's own session.
+stop_job() {
+  printf '%%%%bash\np=$(cat /content/job/pgid 2>/dev/null)\nif [[ $p =~ ^[0-9]+$ ]] && [ "$p" -gt 1 ]; then pkill -s $p; fi\n' | c 60 > /dev/null
+  echo "job.sh: $1; the job on $vm was stopped"; exit 7
+}
+started=$SECONDS
 copied=$SECONDS
+moved=$SECONDS
+bytes=
 while :; do
   if [ $((SECONDS - copied)) -ge 180 ]; then
     copied=$SECONDS
     printf '%%%%bash\ncd /content/job/out 2>/dev/null || exit 0\ndate -u +%%FT%%TZ\necho "== summary.tsv"; cat summary.tsv 2>/dev/null\necho "== build.log"; tail -20 build.log 2>/dev/null\nl=$(ls -t [0-9]*.log 2>/dev/null | head -1)\n[ -z "$l" ] || { echo "== $l"; tail -20 "$l"; }\n' |
       c 60 > "$out/progress.txt"
+    gone "$(cat "$out/progress.txt")" && vanished "at a progress copy"
+    echo "job.sh: $(date -u +%FT%TZ) running on $vm for $((SECONDS - started)) s, out/ ${bytes:-?} bytes"
   fi
-  r=$(printf '%%%%bash\np=$(cat /content/job/pgid 2>/dev/null)\nif [ -e /content/job/DONE-%s ]; then echo "JOB""DONE"; elif [[ $p =~ ^[0-9]+$ ]] && kill -0 "$p" 2>/dev/null; then echo "RUN""NING"; elif [ -e /content/job/DONE-%s ]; then echo "JOB""DONE"; else echo "JOB""DEAD"; fi\n' "$tok" "$tok" | c 60)
+  # The answer is the state and the byte count of /content/job/out, as "RUNNING 12345".
+  r=$(printf '%%%%bash\np=$(cat /content/job/pgid 2>/dev/null)\nb=$(du -sb /content/job/out 2>/dev/null | cut -f1)\nif [ -e /content/job/DONE-%s ]; then echo "JOB""DONE"; elif [[ $p =~ ^[0-9]+$ ]] && kill -0 "$p" 2>/dev/null; then echo "RUN""NING ${b:-0}"; elif [ -e /content/job/DONE-%s ]; then echo "JOB""DONE"; else echo "JOB""DEAD"; fi\n' "$tok" "$tok" | c 60)
+  gone "$r" && vanished "at a poll"
   case $r in *JOBDONE*) break;; *JOBDEAD*) echo "job died on $vm"; printf '%%%%bash\ntail -20 /content/job/run.log\n' | c; exit 5;; esac
+  b=$(command grep -a -o -E 'RUNNING [0-9]+' <<<"$r")
+  if [ -n "$b" ] && [ "${b#RUNNING }" != "$bytes" ]; then bytes=${b#RUNNING }; moved=$SECONDS; fi
+  [ $((SECONDS - started)) -lt "$limit" ] || stop_job "the job passed its limit of $limit s (JOB_LIMIT)"
+  [ $((SECONDS - moved)) -lt "$stall" ] || stop_job "no answer from the VM or no new output for $stall s (JOB_STALL)"
   sleep 20
 done
 timeout 600 colab --auth=adc download -s "$vm" /content/job/out.tgz "$out/out.tgz" 2>&1 | scrub | tail -1
@@ -857,5 +956,5 @@ for offloading:
 | Editing `job.sh` in place while jobs ran it | bash reads a script as it runs, so a running job can read the new text at its old offset and run half a command | Write `job.sh.new`, test it, then `mv` it over the old one: a running job keeps the old file (`/proc/<pid>/fd/255` shows it as deleted) |
 | `pgrep -f '<pattern>'` to find a job | Matched the shell running the `pgrep` command itself, whose command line contains the pattern | Record the job's pid when it starts, or look a pid up with `ps -o pid,args -p <pid>` |
 | An empty variable in `sed -i "/^$n /d"` | Would delete every line of the pool file | Check every value against a pattern first; `set -u` (section 6) |
-| `kill -- -$(cat pgid)` | A pgid file holding 1 would kill every process on the VM | Accept only a number greater than 1 |
+| `kill -- -$(cat pgid)` | A pgid file holding 1 would kill every process on the VM; and it misses a command a `timeout` inside the job moved into its own process group | Kill the session, `pkill -s`, and accept only a number greater than 1 (`pkill -s 0` is the caller's session) |
 | `--tpu v5e1` | Not in `colab new --help`, which lists `V5E1` and `V6E1` | Use the spelling the help lists |
