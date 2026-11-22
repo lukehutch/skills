@@ -177,6 +177,11 @@ The pattern that worked:
 6. **Clean up per job, not per VM**: kill the job's process group (`kill -- -$(cat pgid)`),
    then delete `/content/job`. Keep the toolchain and build cache (for example
    `CARGO_TARGET_DIR=/content/target`) so the next job on the same VM builds incrementally.
+   When jobs from different checkouts share that cache, never build in the freshly unpacked
+   copy: `tar` restores the original mtimes, so a file edited before another checkout's last
+   build looks older than that build, and cargo (like make) silently reuses the other
+   checkout's code. Copy into a fixed build directory with `rsync -rlpc --delete` (contents
+   compared by checksum, no `-t`), so that only changed files get a new mtime.
    Killing the process group matters: a job still running when its VM is handed on would write
    into the next job's directory and mix its results into the new job's.
 
@@ -505,12 +510,22 @@ if [ ! -e /content/setup-done ]; then
   touch /content/setup-done
 fi
 source "$HOME/.cargo/env" || { echo "run.sh: no $HOME/.cargo/env" >&2; exit 2; }
-mkdir -p $J/src $J/extra $J/out
+mkdir -p $J/src $J/extra $J/out /content/src /content/extra
 tar xzf $J/src.tgz -C $J/src; tar xzf $J/extra.tgz -C $J/extra
 pushd $J/src > /dev/null || exit 1
 git init -q && git add -A && git -c user.name=job -c user.email=job commit -qm snapshot
+popd > /dev/null
+# Never build in the unpacked copy: tar restores each file's original mtime, so with a target
+# dir shared by several checkouts' jobs, a file edited before another checkout's last build
+# looks older than that build, and cargo silently reuses the other checkout's code. rsync -c
+# without -t rewrites only files whose contents changed, with the current time as their mtime:
+# changed files rebuild, unchanged ones stay incremental.
+command -v rsync > /dev/null || apt-get install -y -qq rsync >> $J/setup.log 2>&1
+rsync -rlpc --delete $J/src/ /content/src/ || { echo "run.sh: rsync of the source failed" >&2; exit 2; }
+rsync -rlpc --delete $J/extra/ /content/extra/ || { echo "run.sh: rsync of the extra files failed" >&2; exit 2; }
+pushd /content/src > /dev/null || exit 1
 nc=$(nproc); [[ $nc =~ ^[0-9]+$ ]] || nc=1
-export CARGO_TARGET_DIR=/content/target CARGO_BUILD_JOBS=$nc EXTRA_DIR=$J/extra
+export CARGO_TARGET_DIR=/content/target CARGO_BUILD_JOBS=$nc EXTRA_DIR=/content/extra
 s=$(date +%s); cargo test --workspace --no-run > $J/out/build.log 2>&1; echo "build rc=$? secs=$(( $(date +%s) - s ))" >> $J/out/build.log
 n=0
 while IFS= read -r line; do
