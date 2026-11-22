@@ -570,8 +570,17 @@ popd > /dev/null
 tar czf $J/out.tgz -C $J out; touch $J/DONE-$TOKEN
 R
 printf '%%%%bash\nmkdir -p /content/job\n' | c > /dev/null
+# An upload that fails is tried 3 times, 10 s apart, then the job stops with exit 6 before a launch
+# without its files. colab exits 1 on an HTTP error (an unhealthy VM can answer every upload with
+# HTTP 500); without this check the job went on and failed later as "launch failed".
+# PIPESTATUS[0] is the upload's own exit, not grep's or tail's.
 for f in src.tgz extra.tgz tests.txt run.sh; do
-  timeout 600 colab --auth=adc upload -s "$vm" "$out/$f" "/content/job/$f" 2>&1 | command grep -a -v '@' | tail -1
+  for try in 1 2 3; do
+    timeout 600 colab --auth=adc upload -s "$vm" "$out/$f" "/content/job/$f" 2>&1 | command grep -a -v '@' | tail -1
+    [ "${PIPESTATUS[0]}" = 0 ] && break
+    [ $try = 3 ] && { echo "job.sh: upload of $f to $vm failed 3 times" >&2; exit 6; }
+    sleep 10
+  done
 done
 # Each job has its own token, so a DONE file left by an earlier job cannot end this one's wait.
 # setsid gives run.sh its own process group, whose id `pool.sh release` kills.
