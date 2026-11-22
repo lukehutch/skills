@@ -132,6 +132,11 @@ free disk on `/` and `/content`, running as root. Not present: Rust, and the `ti
 `gensub`, `PROCINFO`) with an error on stderr and prints nothing, so a script that parses its own
 logs with awk silently produces empty results there. Install gawk (`apt-get install -y -qq gawk`)
 in the one-time setup when your scripts need it.
+There is no `ld.lld` (a std VM has `cc` and `ld`; a v5e VM was seen without `ld` too), so any test
+that links a native binary with LLD fails on every VM until it is installed. Check and install
+on every job, not only in the one-time setup, so that VMs set up earlier get it too:
+`command -v cc > /dev/null && command -v ld > /dev/null && command -v ld.lld > /dev/null || apt-get
+install -y -qq gcc binutils lld` (with an `apt-get update -qq` retry). Measured: 18 s, Ubuntu LLD 18.1.3.
 
 ## 4. Running a long job reliably
 
@@ -558,6 +563,9 @@ popd > /dev/null
 # without -t rewrites only files whose contents changed, with the current time as their mtime:
 # changed files rebuild, unchanged ones stay incremental.
 command -v rsync > /dev/null || apt-get install -y -qq rsync >> $J/setup.log 2>&1
+# Native tests link with cc, ld and ld.lld; a VM lacks ld.lld (and a v5e VM lacked ld). 18 s.
+command -v cc > /dev/null && command -v ld > /dev/null && command -v ld.lld > /dev/null ||
+  { apt-get install -y -qq gcc binutils lld || { apt-get update -qq && apt-get install -y -qq gcc binutils lld; }; } >> $J/setup.log 2>&1
 rsync -rlpc --delete $J/src/ /content/src/ || { echo "run.sh: rsync of the source failed" >&2; exit 2; }
 rsync -rlpc --delete $J/extra/ /content/extra/ || { echo "run.sh: rsync of the extra files failed" >&2; exit 2; }
 pushd /content/src > /dev/null || exit 1
