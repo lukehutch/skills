@@ -901,6 +901,11 @@ are what was given to the agents here):
 
 - Run every build, test, clippy run and benchmark on a VM. Only editing, formatting, git and
   the push scripts run on the local machine. A job already running locally may finish there.
+- Build and run on separate lines of the tests file. `job.sh` allows each line 3600 s, which
+  covers a cold build (about 3800 s on a 2-core std VM; raise `JOB_LIMIT` and `JOB_STALL` for
+  that build only) but does not cap a test. So write `!cargo test --no-run -p <crate> --test <t>`
+  first, then `!timeout 60 cargo test -p <crate> --test <t> <filter>` for each test piece and
+  `!timeout <limit> cargo test ...` for each benchmark, with its own limit.
 - If no VM can be had (every shape exits 3), wait 15 seconds and try again (the reaper stops a
   VM idle for 60 s, so a longer wait lets a freed VM be stopped instead of reused); do not fall back
   to running the job locally, or the local machine is overloaded again.
