@@ -318,8 +318,8 @@ A VM moves through these states:
 - **`acquire <shape> <owner>`** prints the name of a VM that the caller now holds alone.
   It takes an idle VM of that shape if there is one, and otherwise creates one named
   `<shape><k>` with the lowest free `k`. Exit 3 means `colab new` failed (account limit
-  reached, or `Service Unavailable`); the caller then tries another shape, waits, or runs
-  the work locally.
+  reached, or `Service Unavailable`); the caller then tries another shape, or waits 15 s and
+  tries again; it never falls back to running the work locally.
 - **`release <name>`** is called by the client when its job is finished, also when the job
   failed. On the VM it kills the job's process group (the job wrote its process group id to
   `/content/job/pgid`) and deletes `/content/job`. It does **not** delete the toolchain
