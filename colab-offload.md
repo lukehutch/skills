@@ -582,6 +582,9 @@ for f in src.tgz extra.tgz tests.txt run.sh; do
     sleep 10
   done
 done
+# The uploaded copies are emptied, not deleted (no rm from a variable path): each job keeps a
+# copy of the worktree and the extra dir, and many jobs can fill a per-user /tmp quota.
+: > "$out/src.tgz"; : > "$out/extra.tgz"
 # Each job has its own token, so a DONE file left by an earlier job cannot end this one's wait.
 # setsid gives run.sh its own process group, whose id `pool.sh release` kills.
 tok=$(date +%s%N)
@@ -604,6 +607,7 @@ while :; do
 done
 timeout 600 colab --auth=adc download -s "$vm" /content/job/out.tgz "$out/out.tgz" 2>&1 | command grep -a -v '@' | tail -1
 tar xzf "$out/out.tgz" -C "$out" && cp "$out/out/summary.tsv" "$out/summary.tsv" || die "no results in $out/out.tgz"
+: > "$out/out.tgz"
 cat "$out/summary.tsv"; tail -1 "$out/out/build.log"
 awk -F'\t' '$6 == "" && $2 != 0 {bad = 1} END {exit bad}' "$out/summary.tsv"
 ```
