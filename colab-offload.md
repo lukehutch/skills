@@ -917,7 +917,7 @@ are what was given to the agents here):
 
 An agent that ended its turn with jobs still running can be resumed once they end.
 `wait-agent-jobs.sh <label>` exits when no `job.sh` or `farm_run.sh` process names the label
-(its worktree, `--owner` or `--out` path). Run it in the background; when it reports, send the
+(in its worktree or output path; a job on another worktree is missed, see section 9). Run it in the background; when it reports, send the
 agent a message to continue.
 
 ```bash
