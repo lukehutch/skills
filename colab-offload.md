@@ -148,13 +148,22 @@ root with the identity uid map, capabilities docker's default set plus SYS_PTRAC
 - Works: `unshare -Urn` with veth pairs and `tc ... netem` inside; bind mounts; clang, qemu-user
   and gdb-multiarch from apt (Ubuntu's `gdb` has no aarch64 or riscv); podman rootless, as a
   user of its own, with `containers.conf` holding `default_sysctls = []`, `pidns = "host"`,
-  `default_capabilities` = podman's eleven plus `NET_RAW` (for ping in a container), and
+  `default_capabilities` = podman's eleven plus `NET_RAW` (for ping in a container; the eleven of
+  the VM's podman 4.9.3, from Ubuntu's containers-common 0.57.4 `containers.conf`, are those of
+  podman 5.8.9: CHOWN, DAC_OVERRIDE, FOWNER, FSETID, KILL, NET_BIND_SERVICE, SETFCAP, SETGID,
+  SETPCAP, SETUID, SYS_CHROOT; read on l43 2026-11-22), and
   `cgroup_manager = "cgroupfs"`, after `mknod -m 666 /dev/net/tun c 10 200`. Measured: runs,
   volumes, two containers on a podman network, image builds.
 - Fails: podman as root (netavark "Netlink error: Operation not permitted", crun
   "cgroup.subtree_control ... Read-only file system"); an overlay mount whose upper directory is on
   `/content` (itself overlayfs: "wrong fs type, bad option"), as root or in `unshare -Urm`. An
-  overlay with its upper and work directories on a tmpfs mounts, `index=on` included.
+  overlay with its upper and work directories on a tmpfs mounts, `index=on` included; so does it
+  inside `unshare -m --propagation private` as root, with the checkout bound at a fixed path and a
+  tmpfs over its build directory (not over the clone directory itself: a mount point cannot be
+  renamed, "Device or resource busy", and a tool that drops a stale clone by renaming it fails),
+  and a second mount of the same upper directory is refused
+  ("overlay already mounted"), as on Linux generally (l43, kernel 6.6, 2026-11-22). The namespace
+  keeps these mounts from every other job on the VM and drops them when its process ends.
 `job.sh` below installs these tools once per VM (marker `/content/setup-full-3-done`).
 
 ## 4. Running a long job reliably
@@ -565,12 +574,23 @@ J=/content/job; TOKEN=${1-}; PREBUILD=${2-}
 [[ $TOKEN =~ ^[0-9]+$ ]] || { echo "run.sh: bad token '$TOKEN'" >&2; exit 2; }
 [[ $PREBUILD =~ ^[01]$ ]] || { echo "run.sh: bad prebuild flag '$PREBUILD'" >&2; exit 2; }
 [ -n "${HOME-}" ] || { echo "run.sh: HOME is empty" >&2; exit 2; }
-if [ ! -e /content/setup-done ]; then
-  curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none > $J/setup.log 2>&1
-  apt-get install -y -qq time >> $J/setup.log 2>&1
+# The marker is made only when each step succeeded: made whatever their results, one failed
+# rustup download left a VM on which every later job died at `source`, with no word of the cause.
+# A failed step is named on stderr, which run.log keeps and the wait below prints on exit 5.
+if [ ! -e /content/setup-done ] || [ ! -f "$HOME/.cargo/env" ]; then
+  step=
+  curl -sSf https://sh.rustup.rs > $J/rustup-init.sh 2> $J/setup.log || step="the download of rustup"
+  [ -n "$step" ] || sh $J/rustup-init.sh -y --profile minimal --default-toolchain none >> $J/setup.log 2>&1 || step=rustup
+  [ -n "$step" ] || command -v /usr/bin/time > /dev/null || apt-get install -y -qq time >> $J/setup.log 2>&1 ||
+    { apt-get update -qq && apt-get install -y -qq time; } >> $J/setup.log 2>&1 || step="apt-get install time"
+  if [ -n "$step" ]; then
+    echo "run.sh: setup failed: $step (setup.log)" >&2
+    tail -5 $J/setup.log | command grep -a -v '@' >&2
+    exit 2
+  fi
   touch /content/setup-done
 fi
-source "$HOME/.cargo/env" || { echo "run.sh: no $HOME/.cargo/env" >&2; exit 2; }
+source "$HOME/.cargo/env" || { echo "run.sh: setup failed: no $HOME/.cargo/env" >&2; exit 2; }
 mkdir -p $J/src $J/extra $J/out /content/src /content/extra
 tar xzf $J/src.tgz -C $J/src; tar xzf $J/extra.tgz -C $J/extra
 pushd $J/src > /dev/null || exit 1
@@ -687,8 +707,15 @@ tar czf $J/out.tgz -C $J out; touch $J/DONE-$TOKEN
 R
 # A job left on this VM by an earlier job.sh run is cleared first, as pool.sh release does: its
 # pgid file would stop the launch below ("[ -s pgid ] ||"), and the wait loop would then see the
-# old dead group and report "job died" (seen twice, then reproduced, 2026-11-22).
-printf '%%%%bash\np=$(cat /content/job/pgid 2>/dev/null)\nif [[ $p =~ ^[0-9]+$ ]] && [ "$p" -gt 1 ]; then kill -- -$p 2>/dev/null; sleep 2; fi\nrm -rf --one-file-system --preserve-root=all /content/job\nmkdir -p /content/job\n' | c > /dev/null
+# old dead group and report "job died" (seen twice, then reproduced, 2026-11-22). The clearing is
+# confirmed by a separate call and tried 3 times: a lost clearing call (another exec call held the
+# same kernel) left the old files and gave the same "job died" with no run.
+for try in 1 2 3; do
+  printf '%%%%bash\np=$(cat /content/job/pgid 2>/dev/null)\nif [[ $p =~ ^[0-9]+$ ]] && [ "$p" -gt 1 ]; then kill -- -$p 2>/dev/null; sleep 2; fi\nrm -rf --one-file-system --preserve-root=all /content/job\nmkdir -p /content/job\n' | c > /dev/null
+  printf '%%%%bash\n[ -d /content/job ] && [ ! -e /content/job/pgid ] && echo "CLEA""RED"\n' | c 60 | command grep -a -q CLEARED && break
+  [ $try = 3 ] && { echo "job.sh: clearing the previous job on $vm failed 3 times" >&2; exit 4; }
+  sleep 10
+done
 # An upload that fails is tried 3 times, 10 s apart, then the job stops with exit 6 before a launch
 # without its files. colab exits 1 on an HTTP error (an unhealthy VM can answer every upload with
 # HTTP 500); without this check the job went on and failed later as "launch failed".
@@ -702,7 +729,10 @@ for f in src.tgz extra.tgz tests.txt run.sh; do
   done
 done
 # The uploaded copies are emptied, not deleted (no rm from a variable path): each job keeps a
-# copy of the worktree and the extra dir, and many jobs can fill a per-user /tmp quota.
+# copy of the worktree and the extra dir, and many jobs can fill a per-user /tmp quota. A status
+# script can warn before that: `quota --show-mntpoint -w` prints "<fs> <mount point> <blocks>
+# <quota> <limit> ..." in KiB (a `*` follows the blocks once past the quota), so warn when the
+# blocks of the /tmp line pass 80% of the hard limit, or of the soft one when there is no hard one.
 : > "$out/src.tgz"; : > "$out/extra.tgz"
 # Each job has its own token, so a DONE file left by an earlier job cannot end this one's wait.
 # setsid gives run.sh its own process group, whose id `pool.sh release` kills.
@@ -719,7 +749,18 @@ done
 # Wait for DONE. A failed poll (connection lost) is retried; a job process that is gone with no
 # DONE file ends the wait with exit 5, so a dead job never makes this loop run forever. An empty
 # or non-numeric pgid counts as dead: `kill -0` with no argument would only print an error.
+# Once 180 s or more have passed since the last copy, the job's progress is copied to
+# $out/progress.txt, overwritten each time: the time, out/summary.tsv so far, and the last 20 lines
+# of out/build.log and of the newest line log, so a long job can be followed without waiting for its
+# end. Counted with $SECONDS, not in polls: an exec call can return only when its timeout ends it
+# (60 s on l43, 2026-11-22), so a poll can take 80 s and a count of polls says little about time.
+copied=$SECONDS
 while :; do
+  if [ $((SECONDS - copied)) -ge 180 ]; then
+    copied=$SECONDS
+    printf '%%%%bash\ncd /content/job/out 2>/dev/null || exit 0\ndate -u +%%FT%%TZ\necho "== summary.tsv"; cat summary.tsv 2>/dev/null\necho "== build.log"; tail -20 build.log 2>/dev/null\nl=$(ls -t [0-9]*.log 2>/dev/null | head -1)\n[ -z "$l" ] || { echo "== $l"; tail -20 "$l"; }\n' |
+      c 60 > "$out/progress.txt"
+  fi
   r=$(printf '%%%%bash\np=$(cat /content/job/pgid 2>/dev/null)\nif [ -e /content/job/DONE-%s ]; then echo "JOB""DONE"; elif [[ $p =~ ^[0-9]+$ ]] && kill -0 "$p" 2>/dev/null; then echo "RUN""NING"; elif [ -e /content/job/DONE-%s ]; then echo "JOB""DONE"; else echo "JOB""DEAD"; fi\n' "$tok" "$tok" | c 60)
   case $r in *JOBDONE*) break;; *JOBDEAD*) echo "job died on $vm"; printf '%%%%bash\ntail -20 /content/job/run.log\n' | c; exit 5;; esac
   sleep 20
