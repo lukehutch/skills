@@ -255,22 +255,38 @@ This exposed a real problem worth knowing about. One Rust test binary peaked at 
 single thread, and out-of-memory at 51.5 GB with 8 threads, although no single test in it
 used more than 3.0 GB. Measured so far: calling `malloc_trim(0)` at the end of each test
 thread (in the test harness only) cut a two-test process from 4.17 GB to 2.49 GB, so glibc's
-allocator does keep a finished test's freed memory. Not yet shown: that this explains 40 GB.
-With one test thread the tests run one after another and should reuse the same freed memory,
-so a peak 13 times the largest test points also to a leak, an unbounded cache, or many
-allocator arenas from threads the tests start. If a test binary's peak is far above its
-largest test, record the resident memory after each test in one process before buying a
-bigger VM: steady growth means a leak or a cache, a step per new thread means arenas.
+allocator does keep a finished test's freed memory, but that was not the main cause. The
+cause, found 2026-11-22: a VM has no hardware instruction counter, so the scaling meter fell
+back to processor time and ran each size 15 times, and the scaling test helpers built all 30
+inputs (15 per size, two sizes) before the first run and kept every one to the end.
+`fits_sig_takes_linear_time_in_the_depth` alone held 37.1 GB, `meets_of_shared_tuples` 32.5 GB.
+Limiting glibc to one or two arenas (`MALLOC_ARENA_MAX=1` or `2`) left the peak unchanged, so
+arenas were ruled out. Building the inputs in batches of 5 cut those two to 11.0 GB and
+9.3 GB; the fix that landed builds each input just before its run, outside the measured time,
+and drops it right after, and a test counts the inputs alive at once (with the fix disabled it
+caught 10 against 1 allowed). A meter that repeats each size multiplies whatever is held per
+repeat. If a test binary's peak is far above its largest test, record the resident memory
+after each test in one process before buying a bigger VM: steady growth means a leak or a
+cache, a step per new thread means arenas, a step per repeat means held inputs.
+
+Two cautions when measuring memory. `Maximum resident` from `/usr/bin/time -v` is the peak of
+the largest single process, not the run's total, and scaling checks often run in child
+processes. A sampler or trace must follow the test process and its children: one that watched
+the cargo parent read nothing useful, and children that leave through `std::process::exit`
+are missed by a trace of the parent alone.
 
 ## 5. Shapes, cost and limits
 
-Units per hour are what one VM of the shape costs, read from `colab usage` with only that VM
-running. Cores and RAM are what the VM reports (`nproc`, `free -g`).
+Units per hour are what one VM of the shape costs: the account's total rate in `colab usage`
+while that VM ran, minus the rate of the VMs already running (two probe VMs, 0.52/hr). Each
+figure is a single reading. Billing is per VM, not per core: an 8-core VM costs the same
+0.26/hr idle or with all 8 cores busy. Cores and RAM are what the VM reports (`nproc`,
+`free -g`).
 
 | Shape (`new` flags) | Cores | RAM | Units/hr | Units per core-hour | Notes |
 |---|---|---|---|---|---|
 | standard CPU (none) | 2 | 12 GB | 0.08 | 0.040 | Cheapest per core; small test runs only: a cold build of a large Rust workspace on 2 cores ran 43 min with no result |
-| high-mem CPU (`--high-mem`) | 8 | 50 GB | 0.26 | 0.033 | Best value per core and per GB; the workhorse |
+| high-mem CPU (`--high-mem`) | 8 | 50 GB | 0.26 | 0.033 | Best value per core and per GB; the workhorse. AMD EPYC 7B12, 226 GB disk |
 | T4 (`--gpu T4`) | 2 | 12 GB | 1.15 | 0.58 | Only worth it for GPU work |
 | T4 high-mem (`--gpu T4 --high-mem`) | 8 | 50 GB | 1.57 | 0.20 | |
 | L4 (`--gpu L4`) | 12 | 52 GB | 1.94 | 0.16 | Most cores among the GPU shapes per unit |
@@ -300,8 +316,12 @@ Ultra account; Colab does not publish them and says they vary):
 GPU and TPU VMs did not count against the CPU limit.
 
 **Timings:** a CPU VM is created in 3 to 5 s; a TPU v6e-1 took about 6 min. A cold VM
-needed about 1 min to install Rust and 6 to 10.5 min to build the workspace (8 cores);
-later jobs on the same VM built incrementally.
+needed about 1 min to install Rust (the pinned nightly of `rust-toolchain.toml` installed
+without trouble) and 6 to 10.5 min to build the workspace with tests (8 cores; a release build
+of the binaries alone took 5 min 45 s); later jobs on the same VM built incrementally. A 16 MB
+source tarball uploaded without trouble. A binary built on the local machine (Fedora, glibc
+2.43) ran on a VM (Ubuntu, glibc 2.39); that held for the one binary tried and is not
+guaranteed, since a binary linked against a newer glibc can need symbols an older one lacks.
 
 **Idle VMs are not stopped quickly.** A VM left idle stayed alive about 45 min, billing the
 whole time. The Colab FAQ says idle VMs are deleted "after a period of time" and that a VM
@@ -657,6 +677,7 @@ source "$HOME/.cargo/env" || { echo "run.sh: setup failed: no $HOME/.cargo/env" 
 mkdir -p $J/src $J/extra $J/out /content/src /content/extra
 tar xzf $J/src.tgz -C $J/src; tar xzf $J/extra.tgz -C $J/extra
 pushd $J/src > /dev/null || exit 1
+# The tarball holds no .git, and tests that call git (git ls-files) need a repository.
 git init -q && git add -A && git -c user.name=job -c user.email=job commit -qm snapshot
 popd > /dev/null
 # Never build in the unpacked copy: tar restores each file's original mtime, so with a target
@@ -687,7 +708,7 @@ rsync -rlpc --delete $J/extra/ /content/extra/ || { echo "run.sh: rsync of the e
 pushd /content/src > /dev/null || exit 1
 nc=$(nproc); [[ $nc =~ ^[0-9]+$ ]] || nc=1
 export CARGO_TARGET_DIR=/content/target CARGO_BUILD_JOBS=$nc EXTRA_DIR=/content/extra
-# Colab VMs have no hardware counter of instructions (dmesg: "no PMU driver, software events
+# hm and std Colab VMs have no hardware counter of instructions (l4 and v5e not checked; dmesg: "no PMU driver, software events
 # only"; perf_event_open of the instructions counter fails). A checkout that ships a DynamoRIO
 # client at tools/icount (as zed does: build.sh, install-dynamorio.sh, zed_icount.c) gets
 # DynamoRIO 11.3.0 at /opt/dynamorio and the client built at /content/icount, once per VM and
@@ -695,7 +716,13 @@ export CARGO_TARGET_DIR=/content/target CARGO_BUILD_JOBS=$nc EXTRA_DIR=/content/
 # binaries then count instructions in software. Measured 2026-11-22 on an hm VM: 1.12x slower
 # than native at 0.9 s of work (plus about 0.08 s of start-up), the same count on every run, and
 # ratios within 0.1% of the hardware counter's. valgrind is for tests that run it. Other
-# checkouts skip this.
+# checkouts skip this. Rejected: DynamoRIO's own sample counter (1.73x, two runs gave
+# different counts) and valgrind callgrind (21x). The software count is about 133,000
+# instructions below the hardware count at both sizes measured (process start and exit,
+# inferred), which leaves ratios unchanged. Without the client the meter measures processor
+# time: never report such a ratio as an instruction count. A branch older than tools/icount
+# gets processor time too, and the meter's own tests (scaling_tests.rs) fail on a VM; merge
+# main into the branch.
 if [ -e tools/icount/build.sh ]; then
   if ! cmp -s tools/icount/zed_icount.c /content/icount/zed_icount.c; then
     { { apt-get install -y -qq cmake g++ valgrind || { apt-get update -qq && apt-get install -y -qq cmake g++ valgrind; }; } &&
@@ -903,8 +930,16 @@ literal path and `--one-file-system --preserve-root=all`; keep it that way if yo
 ```bash
 O=$HOME/colab-runs/run-1; mkdir -p "$O"
 printf '%s\n' '-p mycrate --test big_tests' '-p othercrate' '!cargo clippy --all-targets -- -D warnings' > "$O.tests"
-vm=$(./pool.sh acquire hm me) || vm=$(./pool.sh acquire l4 me) || { echo "no VM free; try again in 2 min"; exit 1; }
-[ -n "$vm" ] || { echo "pool.sh printed no VM name"; exit 1; }
+vm=
+while [ -z "$vm" ]; do           # exit 3: none free, retry every 15 s; exit 4: you hold one already
+  for s in hm l4 v5e std; do
+    vm=$(./pool.sh acquire $s me); rc=$?
+    [ $rc = 0 ] && break
+    vm=; [ $rc = 3 ] || { echo "pool.sh acquire $s: exit $rc (4: reuse or release the VM you hold)"; exit 1; }
+  done
+  [ -n "$vm" ] || sleep 15
+done
+[[ $vm =~ ^(hm|std|l4|v5e)[0-9]+$ ]] || { echo "pool.sh printed no VM name"; exit 1; }
 ./job.sh "$vm" "$PWD" "$O" "$O.tests" > "$O.log" 2>&1; echo "job rc=$?"
 ./pool.sh release "$vm"          # always, also after a failure
 cat "$O/summary.tsv"
@@ -916,7 +951,9 @@ When several AI agents share the pool, each one needs these rules in its instruc
 are what was given to the agents here):
 
 - Run every build, test, clippy run and benchmark on a VM. Only editing, formatting, git and
-  the push scripts run on the local machine. A job already running locally may finish there.
+  the push scripts run on the local machine. A job already running locally may finish there,
+  but stop at once every loop that would start new local runs (a watcher such as main-watch),
+  or switch it to the VMs: one left running started a new local benchmark run after the order.
 - Cap every test piece at 60 s yourself: `job.sh` runs each line under `timeout 3600`, so a
   plain line (`-p <crate> --test <t>`) has no 60 s cap. Write `!timeout 60 cargo test -p <crate>
   --test <t> <filter>` for each test piece and `!timeout <limit> cargo test ...` for each
@@ -934,7 +971,18 @@ are what was given to the agents here):
   of the job's processes, which a compile uses.
 - If no VM can be had (every shape exits 3), wait 15 seconds and try again (the reaper stops a
   VM idle for 60 s, so a longer wait lets a freed VM be stopped instead of reused); do not fall back
-  to running the job locally, or the local machine is overloaded again.
+  to running the job locally, or the local machine is overloaded again. Exit 4 means you
+  already hold a busy VM: reuse it or release it, and never retry on exit 4. Never hide
+  acquire's exit code; a script that did retried for ever.
+- A test piece that times out in a full run (one piece per core, so heavy pieces share the
+  VM) is run once more, alone, on the same VM, and both results are reported. It passes only
+  if it finishes within its normal limit alone; one that fails alone is really slow. (A full
+  run had 61 of 451 benchmarks hit 20 s at a load of about 10 on 8 cores.)
+- A pattern that selects tests for a farm run or a merge check names them with their group
+  prefix (`l01_38_presburger::`) and is anchored, `^...$`. An unanchored one also matched
+  `short-zed_kernel`, a piece that runs only in a separate sandbox, and the runner stopped.
+- Do not start helper agents. Each counts against the agent limit and needs its own VM; an
+  agent whose work is too big writes a handoff instead.
 - **Benchmarks: run a whole scaling series in one job on one VM.** A Colab VM shares its host
   with other users, so a ratio measured across two VMs, or against a local number, means
   nothing. A ratio that fails is run once more on the same VM before it is analyzed; report
@@ -1016,7 +1064,7 @@ for offloading:
 | A misspelled `--gpu` value | Silently gives an A100 (the most expensive shape) | Check the shape with `colab sessions` after `new` |
 | Reading the cost of a job from `colab usage` | The balance had not moved yet | Rate table × lifetime |
 | Leaving a VM idle "to stop by itself" | Still billing after 45 min | The reaper (section 6) |
-| 8 test threads on a 50 GB VM | Out-of-memory | Thread back-off; the cause of the peak is open (section 4) |
+| 8 test threads on a 50 GB VM | Out-of-memory | Thread back-off. The cause was the scaling helpers holding all 30 inputs while the meter repeated each size 15 times (section 4); fixed by building each input just before its run |
 | Editing `job.sh` in place while jobs ran it | bash reads a script as it runs, so a running job can read the new text at its old offset and run half a command | Write `job.sh.new`, test it, then `mv` it over the old one: a running job keeps the old file (`/proc/<pid>/fd/255` shows it as deleted) |
 | `cp job.sh.next job.sh` (2026-11-22 16:07) | `cp` onto an existing file writes into the same inode, so it is an edit in place: a job running the old text failed with `syntax error near (` at line 337 and returned no results | Only `mv job.sh.next job.sh`; check afterward that `stat -c %i job.sh` changed |
 | `wait-agent-jobs.sh <label>` with jobs on another worktree | An agent ran a job on a second worktree (`b22-presburger3` for agent `b22-presburger4`); its command line did not hold the label, so the wait ended while the job ran | Ask the agent which worktrees its jobs use, and run one wait per worktree name |
@@ -1026,7 +1074,16 @@ for offloading:
 | A test opening an unnamed file with `O_TMPFILE` (zed-rt `which_mappings`, 2026-11-22) | The VM's temporary directory is on overlayfs, whose `open(O_TMPFILE)` fails with EOPNOTSUPP; the child process panicked at its first assertion and the parent reported only "exit 101" | On EOPNOTSUPP, map a `memfd_create` file instead (zed-impl 007be491d; 13 of 13 limits tests pass on l41). Correct for a data-limit test because `may_expand_vm` (mm/mmap.c) applies `RLIMIT_DATA` by the mapping's flags, not by the file behind it, checked against the kernel source. Make a parent test print the child's standard error, so a failure on a VM shows its cause (section 3) |
 | A second `job.sh` run on a VM still held (2026-11-22) | The launch runs only if `/content/job/pgid` does not exist (`[ -s pgid ] ||`, so a retried launch cannot start the run twice). After the first job that file still held the finished job's group, so the second job never started; the wait loop saw a dead group and reported "job died". Reproduced on std5: first job rc 0, second rc 5 | Each job first clears `/content/job` as `pool.sh release` does (kill the old session, delete the directory) and confirms `pgid` is gone before the launch (section 2, step 2; `job.sh` "CLEARED" check) |
 | `timeout 3600` on each line of `job.sh` taken as the test limit | Two test lines ran with no 60 s cap, and a red benchmark ran 337 s | Put `timeout 60` (or the benchmark's own limit) in each `!` line (section 6) |
-| `pgrep -f '<pattern>'` to find a job | Matched the shell running the `pgrep` command itself, whose command line contains the pattern | Record the job's pid when it starts, or look a pid up with `ps -o pid,args -p <pid>` |
+| `pgrep -f '<pattern>'` to find a job | Matched the shell running the `pgrep` command itself, whose command line contains the pattern | Record the job's pid when it starts, or look a pid up with `ps -o pid,args -p <pid>`; or wait for an output file the job writes when it ends; or use the bracket form `pgrep -f '[b]in plan'`, which the loop's own text does not match. Such a loop never ends: seven were found 13 to 22 hours old (2026-11-22), so list wait loops older than 10 minutes and stop them by pid |
+| Native tests that link with `ld.lld` (build_binary, l01_36b_link_identity, 2026-11-22) | A std VM has `cc` and `ld` but no `ld.lld`; a v5e VM had no `ld` either, so a merge check failed both tests | `job.sh` installs `gcc binutils lld` when any of the three is missing (section 3; 18 s, Ubuntu LLD 18.1.3) |
+| `vm.overcommit_memory = 1` on the VMs (2026-11-22) | A build asked whether a huge allocation would fit; locally (mode 0) the kernel refuses such a request, on the VM every request is granted, so the build ran until the VM killed it at about 52 GB, with no message | Refuse any request larger than `MemTotal + SwapTotal` before asking the allocator. A program that relies on an allocation failing locally is killed silently on a VM |
+| A farm share whose VM setup failed (2026-11-22) | It reported "pieces: 0, failed: 0", which reads as a pass, so broken code could land | Fail the merge check whenever a share ran fewer pieces than it was sent |
+| All 4 parts of a merge check's own tests on std4 (2026-11-22) | Failed once with empty output after 284 s; passed on the next run on std5. The logs were not kept, so the cause is unknown | Open. Keep the logs of any such failure |
+| The local /tmp quota (51.5 GB per user) full, 2026-11-22 | Every shell command failed before it ran (EDQUOT), `df` and deletions included; two agents and the orchestrator stopped mid-task. Most of the space (34 GB) was job folders in one session's scratchpad, each keeping its tarballs (about 49 MB a job) | The user frees space from their own terminal. Empty each tarball after its upload (section 6) and keep scratch build copies off /tmp |
+| `run_tests.sh` on a VM | Every piece starts under `systemd-run --user`, and a VM has no user systemd bus | On a VM the farm runs each piece with a 112 GiB memory limit of its own instead |
+| A change to `farm_run.sh` while main-watch runs | main-watch copies the runner when it starts, so it kept the old one | Restart main-watch after a runner change. `farm_run.sh` reruns a part on another VM when `job.sh` exits with anything other than 0 or 1 |
+| A merge check in a fresh worktree | It did nothing: the worktree had no pre-built dependencies | Run `seed-build.sh` first |
+| VM results from before the stale-build fix (11:15Z, 2026-11-22) | Jobs that built in the unpacked copy could reuse another checkout's code (section 4) | Rerun any VM result from before that time that a conclusion rests on |
 | An empty variable in `sed -i "/^$n /d"` | Would delete every line of the pool file | Check every value against a pattern first; `set -u` (section 6) |
 | `kill -- -$(cat pgid)` | A pgid file holding 1 would kill every process on the VM; and it misses a command a `timeout` inside the job moved into its own process group | Kill the session, `pkill -s`, and accept only a number greater than 1 (`pkill -s 0` is the caller's session) |
 | `--tpu v5e1` | Not in `colab new --help`, which lists `V5E1` and `V6E1` | Use the spelling the help lists |
