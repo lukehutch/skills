@@ -821,11 +821,15 @@ done
 # - the job limit, JOB_LIMIT seconds from the launch: by default 3600 for the setup and the build
 #   (a cold build of a large workspace took 3764 s on a 2-core std VM and about 6 min on hm)
 #   plus 3600 for each line, the limit run.sh puts on one try of a line;
-# - the stall limit, JOB_STALL seconds (default 1800) in which no poll got an answer, or the bytes
-#   under /content/job/out did not change. cargo writes a line per crate built and per test run,
-#   so half an hour with no new byte is a hung build, a hung test or a VM that no longer answers
-#   (raise it for a project with tests that run longer silent). A poll that fails for any other
-#   reason than a gone session (a lost connection) is still retried, up to this limit.
+# - the stall limit, JOB_STALL seconds (default 1800) in which no poll got an answer, or neither
+#   the bytes under /content/job/out nor the processor time of the job's processes changed. The
+#   bytes alone are not enough: a ! line that builds with its output in a log of its own left
+#   out/ at 1521 bytes for over 1700 s of a cold build on a 2-core std VM (2026-11-22). A build
+#   or a test that runs uses processor time; a process waiting for ever, or a VM that no longer
+#   answers, does not, and a process that loops for ever is ended by the job limit. The time is
+#   the sum over the processes of the session (`ps -s`), which falls when a process ends, so any
+#   change counts. A poll that fails for any other reason than a gone session (a lost
+#   connection) is still retried, up to this limit.
 # Each copy of the progress also prints one line, so the caller's log of this script grows while
 # the job runs. Both limits are read once and checked as numbers; a test with a fake colab (a
 # script named colab first on PATH) sets them small.
@@ -845,7 +849,7 @@ stop_job() {
 started=$SECONDS
 copied=$SECONDS
 moved=$SECONDS
-bytes=
+bytes= activity=
 while :; do
   if [ $((SECONDS - copied)) -ge 180 ]; then
     copied=$SECONDS
@@ -854,14 +858,15 @@ while :; do
     gone "$(cat "$out/progress.txt")" && vanished "at a progress copy"
     echo "job.sh: $(date -u +%FT%TZ) running on $vm for $((SECONDS - started)) s, out/ ${bytes:-?} bytes"
   fi
-  # The answer is the state and the byte count of /content/job/out, as "RUNNING 12345".
-  r=$(printf '%%%%bash\np=$(cat /content/job/pgid 2>/dev/null)\nb=$(du -sb /content/job/out 2>/dev/null | cut -f1)\nif [ -e /content/job/DONE-%s ]; then echo "JOB""DONE"; elif [[ $p =~ ^[0-9]+$ ]] && kill -0 "$p" 2>/dev/null; then echo "RUN""NING ${b:-0}"; elif [ -e /content/job/DONE-%s ]; then echo "JOB""DONE"; else echo "JOB""DEAD"; fi\n' "$tok" "$tok" | c 60)
+  # The answer is the state, the byte count of /content/job/out and the processor seconds of the
+  # job's session, as "RUNNING 12345 678".
+  r=$(printf '%%%%bash\np=$(cat /content/job/pgid 2>/dev/null)\nb=$(du -sb /content/job/out 2>/dev/null | cut -f1)\nt=$(ps -s "$p" -o times= 2>/dev/null | awk "{ s += \\$1 } END { print s + 0 }")\nif [ -e /content/job/DONE-%s ]; then echo "JOB""DONE"; elif [[ $p =~ ^[0-9]+$ ]] && kill -0 "$p" 2>/dev/null; then echo "RUN""NING ${b:-0} ${t:-0}"; elif [ -e /content/job/DONE-%s ]; then echo "JOB""DONE"; else echo "JOB""DEAD"; fi\n' "$tok" "$tok" | c 60)
   gone "$r" && vanished "at a poll"
   case $r in *JOBDONE*) break;; *JOBDEAD*) echo "job died on $vm"; printf '%%%%bash\ntail -20 /content/job/run.log\n' | c; exit 5;; esac
-  b=$(command grep -a -o -E 'RUNNING [0-9]+' <<<"$r")
-  if [ -n "$b" ] && [ "${b#RUNNING }" != "$bytes" ]; then bytes=${b#RUNNING }; moved=$SECONDS; fi
+  b=$(command grep -a -o -E 'RUNNING [0-9]+ [0-9]+' <<<"$r")
+  if [ -n "$b" ] && [ "${b#RUNNING }" != "$activity" ]; then activity=${b#RUNNING }; bytes=${activity% *}; moved=$SECONDS; fi
   [ $((SECONDS - started)) -lt "$limit" ] || stop_job "the job passed its limit of $limit s (JOB_LIMIT)"
-  [ $((SECONDS - moved)) -lt "$stall" ] || stop_job "no answer from the VM or no new output for $stall s (JOB_STALL)"
+  [ $((SECONDS - moved)) -lt "$stall" ] || stop_job "no answer from the VM, or no new output and no processor time used, for $stall s (JOB_STALL)"
   sleep 20
 done
 timeout 600 colab --auth=adc download -s "$vm" /content/job/out.tgz "$out/out.tgz" 2>&1 | scrub | tail -1
