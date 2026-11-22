@@ -372,6 +372,9 @@ To measure a shape's limit, acquire VMs of that shape until `new` fails, and rea
 # An empty VM name would make the sed patterns below match every line, and an empty owner would shift the file's columns.
 set -u -o pipefail
 die() { echo "pool.sh: $*" >&2; exit 2; }
+# colab output goes through scrub: no lines with an @, and each URL replaced, since a URL can carry
+# a runtime-proxy token in its query.
+scrub() { command grep -a -v '@' | sed -E 's#[a-z]+://[^[:space:]]*#<url removed>#g'; }
 [ -n "${HOME-}" ] || die "HOME is empty"
 D=${COLAB_POOL_DIR:-$HOME/.colab-pool}
 [[ $D == /?* ]] || die "COLAB_POOL_DIR must be an absolute path, got '$D'"
@@ -413,10 +416,11 @@ acquire)
   k=1; while command grep -a -q "^$shape$k " "$P"; do k=$((k + 1)); done; n=$shape$k
   name_ok "$n" || die "made a malformed VM name '$n'"
   # $f is empty for std on purpose (no flag), so it is left unquoted.
-  if colab --auth=adc new -s "$n" $f > "$D/new_$n.log" 2>&1; then
+  # The log goes through scrub (see job.sh): no @ lines, no URLs, which can carry a token.
+  if colab --auth=adc new -s "$n" $f 2>&1 | scrub > "$D/new_$n.log"; [ "${PIPESTATUS[0]}" = 0 ]; then
     echo "$n $shape busy $owner $ts" >> "$P"; echo "$n"; exit 0
   fi
-  command grep -a -v '@' "$D/new_$n.log" | tail -1 >&2; exit 3;;
+  tail -1 "$D/new_$n.log" >&2; exit 3;;
 release)
   n=${2-}
   name_ok "$n" || die "release: bad VM name '$n'"
@@ -501,8 +505,12 @@ vm=${1-}; wt=${2-}; out=${3-}; tests=${4-}; extra=${5-}
 prebuild=1
 command grep -a -q -v -E '^(!|$)' "$tests" || prebuild=0
 mkdir -p "$out" || die "cannot create $out"
+# Everything colab prints goes through scrub: it drops lines with an @ (account names) and replaces
+# each URL by <url removed>, since a failed upload prints a URL whose query carries a runtime-proxy
+# token.
+scrub() { command grep -a -v '@' | sed -E 's#[a-z]+://[^[:space:]]*#<url removed>#g'; }
 # One exec call; the cell comes on stdin; $2 is the local timeout in seconds (default 120).
-c() { local s=${2:-120}; timeout "$s" colab --auth=adc exec -s "$vm" --timeout "$((s - 10))" 2>&1 | command grep -a -v '@'; }
+c() { local s=${2:-120}; timeout "$s" colab --auth=adc exec -s "$vm" --timeout "$((s - 10))" 2>&1 | scrub; }
 pushd "$wt" > /dev/null && { git ls-files -z -co --exclude-standard | tar --null -T - -czf "$out/src.tgz" ; } ; popd > /dev/null
 if [ -n "$extra" ]; then
   pushd "$extra" > /dev/null && { git ls-files -z | tar --null -T - -czf "$out/extra.tgz" ; } ; popd > /dev/null
@@ -582,7 +590,7 @@ printf '%%%%bash\np=$(cat /content/job/pgid 2>/dev/null)\nif [[ $p =~ ^[0-9]+$ ]
 # PIPESTATUS[0] is the upload's own exit, not grep's or tail's.
 for f in src.tgz extra.tgz tests.txt run.sh; do
   for try in 1 2 3; do
-    timeout 600 colab --auth=adc upload -s "$vm" "$out/$f" "/content/job/$f" 2>&1 | command grep -a -v '@' | tail -1
+    timeout 600 colab --auth=adc upload -s "$vm" "$out/$f" "/content/job/$f" 2>&1 | scrub | tail -1
     [ "${PIPESTATUS[0]}" = 0 ] && break
     [ $try = 3 ] && { echo "job.sh: upload of $f to $vm failed 3 times" >&2; exit 6; }
     sleep 10
@@ -611,7 +619,7 @@ while :; do
   case $r in *JOBDONE*) break;; *JOBDEAD*) echo "job died on $vm"; printf '%%%%bash\ntail -20 /content/job/run.log\n' | c; exit 5;; esac
   sleep 20
 done
-timeout 600 colab --auth=adc download -s "$vm" /content/job/out.tgz "$out/out.tgz" 2>&1 | command grep -a -v '@' | tail -1
+timeout 600 colab --auth=adc download -s "$vm" /content/job/out.tgz "$out/out.tgz" 2>&1 | scrub | tail -1
 tar xzf "$out/out.tgz" -C "$out" && cp "$out/out/summary.tsv" "$out/summary.tsv" || die "no results in $out/out.tgz"
 : > "$out/out.tgz"
 cat "$out/summary.tsv"; tail -1 "$out/out/build.log"
@@ -653,7 +661,8 @@ are what was given to the agents here):
 - Read `summary.tsv`; analyze a failure on the VM like a local one, including failures that
   do not happen locally (memory, thread count, a host path, a missing tool).
 - Never put a credential, token or email address on a VM, in a tests file or in a kept log;
-  filter `@` lines from anything `colab` prints.
+  filter `@` lines and URLs (a failed upload prints a URL whose query carries a token) from
+  anything `colab` prints; the scripts do this with `scrub`.
 
 ## 7. Privacy
 
