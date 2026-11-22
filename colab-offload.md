@@ -905,7 +905,33 @@ are what was given to the agents here):
   both runs.
 - Get VMs only through `pool.sh acquire`, never `colab new`; return them only through
   `pool.sh release`, never `colab stop`. Release also after a failure. Hold one VM at a time.
-- Run `job.sh` in the background and keep working; do not poll it.
+- Run `job.sh` in the background and keep working; do not poll it. Do not end the turn while
+  a job is still running: an agent that stops then sits idle until someone resumes it.
+
+### Waiting for an agent's jobs (orchestrator)
+
+An agent that ended its turn with jobs still running can be resumed once they end.
+`wait-agent-jobs.sh <label>` exits when no `job.sh` or `farm_run.sh` process names the label
+(its worktree, `--owner` or `--out` path). Run it in the background; when it reports, send the
+agent a message to continue.
+
+```bash
+#!/bin/bash
+# Usage: wait-agent-jobs.sh <agent label>
+# Its own command line holds the label but neither job.sh nor farm_run.sh, so it never counts itself.
+A="${1:-}"
+[ -n "$A" ] || { echo "usage: wait-agent-jobs.sh <label>" >&2; exit 2; }
+while :; do
+  n=$(ps -eo args | command grep -a -E '(job\.sh|farm_run\.sh)' | command grep -a -c -F "$A")
+  [ -n "$n" ] || n=0
+  [ "$n" -gt 0 ] || break
+  sleep 30
+done
+echo "$(date -u +%FT%TZ) jobs of $A ended"
+```
+
+A label that is a prefix of another (`b22-misc7` and `b22-misc70`) matches both; pick labels
+that are not prefixes of each other.
 - Read `summary.tsv`; analyze a failure on the VM like a local one, including failures that
   do not happen locally (memory, thread count, a host path, a missing tool).
 - Never put a credential, token or email address on a VM, in a tests file or in a kept log;
