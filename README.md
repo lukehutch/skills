@@ -1,7 +1,7 @@
 # skills
 
 Claude Code skills and guides: council, cross-review, deep-code-review,
-latex-build, review, rigorous-textual-review, textual-compression, and
+colab-offload, latex-build, review, rigorous-textual-review, textual-compression, and
 WRITING_GOOD_RUST.md.
 
 ## Gemini seats in cross-review: the `agy` wrapper
