@@ -472,20 +472,27 @@ greater than 1.
 #   <extra dir>   optional absolute path of a second git checkout the tests read, given to them
 #                 as EXTRA_DIR
 # Each cargo test line runs with --test-threads=8, and after an out-of-memory kill again at 4, 2,
-# then 1. The VM keeps the toolchain and the build directory /content/target between jobs, so the
-# next job on the same VM builds incrementally; the job's own files are under /content/job, which
-# `pool.sh release` deletes. Output: <out dir>/summary.tsv (line, exit code, threads, seconds,
+# then 1. When every line is a ! command, the build of every test binary before the lines is left
+# out: such commands build what they run themselves, often with other features or flags, so the
+# prebuild would be a second, unused build of the workspace. The VM keeps the toolchain and the
+# build directory /content/target between jobs, and the last job's files as /content/src and
+# /content/extra (see run.sh), so the next job on the same VM builds incrementally; the job's own
+# files are under /content/job, which `pool.sh release` deletes. Output: <out dir>/summary.tsv (line, exit code, threads, seconds,
 # max RSS kB, [oom-retry]) and <out dir>/out/<n>.log per line. Exit 0 when every line passed.
 # Every argument and computed value is checked before use; an empty or malformed one stops the
 # script with exit 2.
 set -u -o pipefail
 die() { echo "job.sh: $*" >&2; exit 2; }
+[ $# -ge 4 ] && [ $# -le 5 ] || die "$# arguments; usage: job.sh <vm> <checkout> <out dir> <tests file> [<extra dir>]"
 vm=${1-}; wt=${2-}; out=${3-}; tests=${4-}; extra=${5-}
 [[ $vm =~ ^(hm|std|l4|v5e)[0-9]+$ ]] || die "bad VM name '$vm'; usage: job.sh <vm> <checkout> <out dir> <tests file> [<extra dir>]"
 [[ $wt == /?* ]] && [ -d "$wt" ] || die "checkout '$wt' is not an absolute path of a directory"
 [[ $out == /?* ]] && [ "$out" != / ] || die "out dir '$out' is not an absolute path below /"
 [ -s "$tests" ] || die "tests file '$tests' is missing or empty"
 [ -z "$extra" ] || { [[ $extra == /?* ]] && [ -d "$extra" ]; } || die "extra dir '$extra' is not an absolute path of a directory"
+# 0 when every non-empty line is a ! command: no prebuild (see the head).
+prebuild=1
+command grep -a -q -v -E '^(!|$)' "$tests" || prebuild=0
 mkdir -p "$out" || die "cannot create $out"
 # One exec call; the cell comes on stdin; $2 is the local timeout in seconds (default 120).
 c() { local s=${2:-120}; timeout "$s" colab --auth=adc exec -s "$vm" --timeout "$((s - 10))" 2>&1 | command grep -a -v '@'; }
@@ -501,8 +508,9 @@ cp "$tests" "$out/tests.txt" || die "cannot copy $tests"
 cat > "$out/run.sh" <<'R'
 #!/bin/bash
 set -u
-J=/content/job; TOKEN=${1-}
+J=/content/job; TOKEN=${1-}; PREBUILD=${2-}
 [[ $TOKEN =~ ^[0-9]+$ ]] || { echo "run.sh: bad token '$TOKEN'" >&2; exit 2; }
+[[ $PREBUILD =~ ^[01]$ ]] || { echo "run.sh: bad prebuild flag '$PREBUILD'" >&2; exit 2; }
 [ -n "${HOME-}" ] || { echo "run.sh: HOME is empty" >&2; exit 2; }
 if [ ! -e /content/setup-done ]; then
   curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none > $J/setup.log 2>&1
@@ -526,7 +534,11 @@ rsync -rlpc --delete $J/extra/ /content/extra/ || { echo "run.sh: rsync of the e
 pushd /content/src > /dev/null || exit 1
 nc=$(nproc); [[ $nc =~ ^[0-9]+$ ]] || nc=1
 export CARGO_TARGET_DIR=/content/target CARGO_BUILD_JOBS=$nc EXTRA_DIR=/content/extra
-s=$(date +%s); cargo test --workspace --no-run > $J/out/build.log 2>&1; echo "build rc=$? secs=$(( $(date +%s) - s ))" >> $J/out/build.log
+if [ "$PREBUILD" = 0 ]; then
+  echo "build skipped: every line is a ! command" > $J/out/build.log
+else
+  s=$(date +%s); cargo test --workspace --no-run > $J/out/build.log 2>&1; echo "build rc=$? secs=$(( $(date +%s) - s ))" >> $J/out/build.log
+fi
 n=0
 while IFS= read -r line; do
   [ -z "$line" ] && continue; n=$((n + 1)); t=8
@@ -563,7 +575,7 @@ tok=$(date +%s%N)
 # A dropped connection can lose the launch command (2026-11-22, t3: "Connection was lost"), so the
 # launch is confirmed by a separate call that sees the pgid file, and retried up to 3 times.
 for try in 1 2 3; do
-  printf '%%%%bash\n[ -s /content/job/pgid ] || { setsid nohup bash /content/job/run.sh %s > /content/job/run.log 2>&1 & echo $! > /content/job/pgid; }\n' "$tok" | c > /dev/null
+  printf '%%%%bash\n[ -s /content/job/pgid ] || { setsid nohup bash /content/job/run.sh %s %s > /content/job/run.log 2>&1 & echo $! > /content/job/pgid; }\n' "$tok" "$prebuild" | c > /dev/null
   printf '%%%%bash\n[ -s /content/job/pgid ] && echo "LAUNCH""ED"\n' | c 60 | command grep -a -q LAUNCHED && break
   [ $try = 3 ] && { echo "launch failed on $vm"; exit 4; }
   sleep 10
