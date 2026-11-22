@@ -137,6 +137,25 @@ that links a native binary with LLD fails on every VM until it is installed. Che
 on every job, not only in the one-time setup, so that VMs set up earlier get it too:
 `command -v cc > /dev/null && command -v ld > /dev/null && command -v ld.lld > /dev/null || apt-get
 install -y -qq gcc binutils lld` (with an `apt-get update -qq` retry). Measured: 18 s, Ubuntu LLD 18.1.3.
+Ubuntu's LLD writes `Linker: Ubuntu LLD 18.1.3` in an executable's `.comment`, not the
+`Linker: LLD <version>` of an upstream build (Fedora): a test that tells LLD from GNU ld by that
+string must allow one vendor word before `LLD`.
+
+What a VM can and cannot do (probed on std2 and l42, 2026-11-22). A VM is a docker container:
+root with the identity uid map, capabilities docker's default set plus SYS_PTRACE and SYS_ADMIN
+(no NET_ADMIN), `/sys/fs/cgroup` and `/proc/sys` read-only, no user systemd bus
+(`systemd-run --user`: "Failed to connect to bus: No medium found"), no `ping`.
+- Works: `unshare -Urn` with veth pairs and `tc ... netem` inside; bind mounts; clang, qemu-user
+  and gdb-multiarch from apt (Ubuntu's `gdb` has no aarch64 or riscv); podman rootless, as a
+  user of its own, with `containers.conf` holding `default_sysctls = []`, `pidns = "host"`,
+  `default_capabilities` = podman's eleven plus `NET_RAW` (for ping in a container), and
+  `cgroup_manager = "cgroupfs"`, after `mknod -m 666 /dev/net/tun c 10 200`. Measured: runs,
+  volumes, two containers on a podman network, image builds.
+- Fails: podman as root (netavark "Netlink error: Operation not permitted", crun
+  "cgroup.subtree_control ... Read-only file system"); an overlay mount whose upper directory is on
+  `/content` (itself overlayfs: "wrong fs type, bad option"), as root or in `unshare -Urm`. An
+  overlay with its upper and work directories on a tmpfs mounts, `index=on` included.
+`job.sh` below installs these tools once per VM (marker `/content/setup-full-3-done`).
 
 ## 4. Running a long job reliably
 
@@ -566,6 +585,20 @@ command -v rsync > /dev/null || apt-get install -y -qq rsync >> $J/setup.log 2>&
 # Native tests link with cc, ld and ld.lld; a VM lacks ld.lld (and a v5e VM lacked ld). 18 s.
 command -v cc > /dev/null && command -v ld > /dev/null && command -v ld.lld > /dev/null ||
   { apt-get install -y -qq gcc binutils lld || { apt-get update -qq && apt-get install -y -qq gcc binutils lld; }; } >> $J/setup.log 2>&1
+# Tools for tests that need podman, qemu, gdb for other architectures and ping (see section 3 for
+# what failed without each). The marker's number goes up with each change of this list.
+if [ ! -e /content/setup-full-3-done ]; then
+  { { apt-get install -y -qq clang qemu-user gdb-multiarch podman uidmap passt slirp4netns fuse-overlayfs zstd xz-utils iputils-ping ||
+      { apt-get update -qq && apt-get install -y -qq clang qemu-user gdb-multiarch podman uidmap passt slirp4netns fuse-overlayfs zstd xz-utils iputils-ping; }; } &&
+    mkdir -p /dev/net && { [ -e /dev/net/tun ] || mknod -m 666 /dev/net/tun c 10 200; } &&
+    { id zp > /dev/null 2>&1 || useradd -m -s /bin/bash zp; } &&
+    mkdir -p /home/zp/.config/containers &&
+    printf '%s\n' '[containers]' 'default_sysctls = []' 'pidns = "host"' \
+      'default_capabilities = ["CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "KILL", "NET_BIND_SERVICE", "SETFCAP", "SETGID", "SETPCAP", "SETUID", "SYS_CHROOT", "NET_RAW"]' \
+      '[engine]' 'cgroup_manager = "cgroupfs"' > /home/zp/.config/containers/containers.conf &&
+    chown -R -P zp: /home/zp/.config && touch /content/setup-full-3-done; } >> $J/setup.log 2>&1 ||
+    echo "run.sh: the setup of the full tests' tools failed (setup.log)" > $J/out/setup-full.log
+fi
 rsync -rlpc --delete $J/src/ /content/src/ || { echo "run.sh: rsync of the source failed" >&2; exit 2; }
 rsync -rlpc --delete $J/extra/ /content/extra/ || { echo "run.sh: rsync of the extra files failed" >&2; exit 2; }
 pushd /content/src > /dev/null || exit 1
@@ -648,6 +681,8 @@ while IFS= read -r line; do
   done
 done < $J/tests.txt
 popd > /dev/null
+# setup.log is written outside out/; a copy goes in out.tgz so a failed setup can be read.
+[ ! -f $J/setup.log ] || cp $J/setup.log $J/out/setup.log
 tar czf $J/out.tgz -C $J out; touch $J/DONE-$TOKEN
 R
 # A job left on this VM by an earlier job.sh run is cleared first, as pool.sh release does: its
@@ -691,6 +726,9 @@ while :; do
 done
 timeout 600 colab --auth=adc download -s "$vm" /content/job/out.tgz "$out/out.tgz" 2>&1 | scrub | tail -1
 tar xzf "$out/out.tgz" -C "$out" && cp "$out/out/summary.tsv" "$out/summary.tsv" || die "no results in $out/out.tgz"
+# out.tgz is emptied once unpacked, like src.tgz and spec.tgz: a 0-byte out.tgz after a job is
+# expected, and its contents are in $out/out (1.log, summary.tsv, setup.log). One that could not
+# be unpacked stops the job above with "no results".
 : > "$out/out.tgz"
 cat "$out/summary.tsv"; tail -1 "$out/out/build.log"
 awk -F'\t' '$6 == "" && $2 != 0 {bad = 1} END {exit bad}' "$out/summary.tsv"
