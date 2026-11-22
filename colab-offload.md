@@ -901,11 +901,21 @@ are what was given to the agents here):
 
 - Run every build, test, clippy run and benchmark on a VM. Only editing, formatting, git and
   the push scripts run on the local machine. A job already running locally may finish there.
-- Build and run on separate lines of the tests file. `job.sh` allows each line 3600 s, which
-  covers a cold build (about 3800 s on a 2-core std VM; raise `JOB_LIMIT` and `JOB_STALL` for
-  that build only) but does not cap a test. So write `!cargo test --no-run -p <crate> --test <t>`
-  first, then `!timeout 60 cargo test -p <crate> --test <t> <filter>` for each test piece and
-  `!timeout <limit> cargo test ...` for each benchmark, with its own limit.
+- Cap every test piece at 60 s yourself: `job.sh` runs each line under `timeout 3600`, so a
+  plain line (`-p <crate> --test <t>`) has no 60 s cap. Write `!timeout 60 cargo test -p <crate>
+  --test <t> <filter>` for each test piece and `!timeout <limit> cargo test ...` for each
+  benchmark, with its own limit. A red run (the old code, expected to fail) gets the same
+  limits; a timeout there is the failure it should show (a quadratic benchmark on the base
+  commit ran 337 s uncapped, 2026-11-22).
+- How the build is done depends on the lines. If any line is plain, `job.sh` first runs
+  `cargo test --workspace --no-run` with no limit of its own (only `JOB_LIMIT`, by default
+  3600 s plus 3600 s a line). If every line starts with `!`, there is no such build, so put
+  `!cargo test --no-run -p <crate> --test <t> ...` first; that line has the 3600 s limit of a
+  line. A cold build on a 2-core std VM takes about 3800 s and is killed there, so do a cold
+  build on hm, l4 or v5e, or add one plain line so the workspace build runs first. The target
+  directory is kept between jobs on one VM, so later builds there are incremental. `JOB_STALL`
+  need not be raised for a long build: since aed21ad the stall check counts the processor time
+  of the job's processes, which a compile uses.
 - If no VM can be had (every shape exits 3), wait 15 seconds and try again (the reaper stops a
   VM idle for 60 s, so a longer wait lets a freed VM be stopped instead of reused); do not fall back
   to running the job locally, or the local machine is overloaded again.
@@ -923,7 +933,9 @@ are what was given to the agents here):
 An agent that ended its turn with jobs still running can be resumed once they end.
 `wait-agent-jobs.sh <label>` exits when no `job.sh` or `farm_run.sh` process names the label
 (in its worktree or output path; a job on another worktree is missed, see section 9). Run it in the background; when it reports, send the
-agent a message to continue.
+agent a message to continue. It is a backup: an agent that started its own background watch on
+a job is resumed by that watch when the job ends, and reports so. When the wait ends while the
+agent still says a job is running, the job is on a worktree whose name lacks the label.
 
 ```bash
 #!/bin/bash
@@ -992,6 +1004,9 @@ for offloading:
 | Editing `job.sh` in place while jobs ran it | bash reads a script as it runs, so a running job can read the new text at its old offset and run half a command | Write `job.sh.new`, test it, then `mv` it over the old one: a running job keeps the old file (`/proc/<pid>/fd/255` shows it as deleted) |
 | `cp job.sh.next job.sh` (2026-11-22 16:07) | `cp` onto an existing file writes into the same inode, so it is an edit in place: a job running the old text failed with `syntax error near (` at line 337 and returned no results | Only `mv job.sh.next job.sh`; check afterward that `stat -c %i job.sh` changed |
 | `wait-agent-jobs.sh <label>` with jobs on another worktree | An agent ran a job on a second worktree (`b22-presburger3` for agent `b22-presburger4`); its command line did not hold the label, so the wait ended while the job ran | Ask the agent which worktrees its jobs use, and run one wait per worktree name |
+| A cold build on std3 (2 cores) under the `job.sh` from before aed21ad (2026-11-22) | The progress log stopped at `Compiling zed-tests` after 3668 s; with no new output for 1800 s the stall check stopped the job before any test ran. A cold workspace build on std takes about 3764 s | The stall check now also counts processor time (aed21ad), so a compile no longer looks stalled; do cold builds on hm, l4 or v5e when one is free (see section 6) |
+| All 15 pool VMs held by long-running agents and their merge checks (2026-11-22) | An agent got exit 3 from `pool.sh acquire` on hm, l4 and v5e for about 30 minutes; std was the only shape it could get | Expected at the pool limit: keep retrying every 15 s and take any shape; an agent that holds a VM while waiting for its own results keeps the others waiting, so release a VM once its job's results are read and no next job is ready |
+| `timeout 3600` on each line of `job.sh` taken as the test limit | Two test lines ran with no 60 s cap, and a red benchmark ran 337 s | Put `timeout 60` (or the benchmark's own limit) in each `!` line (section 6) |
 | `pgrep -f '<pattern>'` to find a job | Matched the shell running the `pgrep` command itself, whose command line contains the pattern | Record the job's pid when it starts, or look a pid up with `ps -o pid,args -p <pid>` |
 | An empty variable in `sed -i "/^$n /d"` | Would delete every line of the pool file | Check every value against a pattern first; `set -u` (section 6) |
 | `kill -- -$(cat pgid)` | A pgid file holding 1 would kill every process on the VM; and it misses a command a `timeout` inside the job moved into its own process group | Kill the session, `pkill -s`, and accept only a number greater than 1 (`pkill -s 0` is the caller's session) |
