@@ -606,6 +606,10 @@ fi
 n=0
 while IFS= read -r line; do
   [ -z "$line" ] && continue; n=$((n + 1)); t=8
+  # A line that holds its own -- (cargo test X -- --skip Y) gets the thread count after it; a second
+  # -- made libtest take "--test-threads=8" as a name filter, so the line ran 0 tests and passed
+  # (b22-checkrest5, 2026-11-22).
+  sep=--; case " $line " in *" -- "*) sep=;; esac
   # A line starting with ! is a shell command run in the checkout's root (clippy, a benchmark
   # with its own flags, a script), once, with no out-of-memory retry.
   if [ "${line#!}" != "$line" ]; then
@@ -623,7 +627,7 @@ while IFS= read -r line; do
   fi
   while :; do
     s=$(date +%s)
-    /usr/bin/time -v -o $J/out/$n.time timeout 3600 cargo test $line -- --test-threads=$t < /dev/null > $J/out/$n.log 2>&1; rc=$?
+    /usr/bin/time -v -o $J/out/$n.time timeout 3600 cargo test $line $sep --test-threads=$t < /dev/null > $J/out/$n.log 2>&1; rc=$?
     secs=$(( $(date +%s) - s )); rss=$(awk '/Maximum resident/ {print $6}' $J/out/$n.time)
     # A timeout (exit 124) is not retried: one test binary killed inside a line that used its whole hour would otherwise cost another hour at half the threads (found by b22-checkwalk5).
     if [ $rc -ne 0 ] && [ $rc -ne 124 ] && [ $t -gt 1 ] && command grep -a -q -E 'SIGKILL|signal: 9|memory allocation of .* failed|SIGABRT' $J/out/$n.log; then
