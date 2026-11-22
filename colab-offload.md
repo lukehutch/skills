@@ -148,7 +148,10 @@ The pattern that worked:
      timeout 120 colab --auth=adc exec -s "$VM" --timeout 110
    ```
 
-   The `[ -s pgid ] ||` guard makes the launch safe to repeat.
+   The `[ -s pgid ] ||` guard makes the launch safe to repeat. It would also block the next job
+   on the same VM, so each job first clears `/content/job` the way `release` does (kill the old
+   group, delete the directory); without that, a second job on a held VM never starts and is
+   reported dead.
 3. **Confirm the launch with a separate call**, and retry the launch up to three times if it
    is not confirmed. A launch call that loses its connection may never have run; without
    this check the poller below waits forever for a job that never started.
@@ -569,7 +572,10 @@ done < $J/tests.txt
 popd > /dev/null
 tar czf $J/out.tgz -C $J out; touch $J/DONE-$TOKEN
 R
-printf '%%%%bash\nmkdir -p /content/job\n' | c > /dev/null
+# A job left on this VM by an earlier job.sh run is cleared first, as pool.sh release does: its
+# pgid file would stop the launch below ("[ -s pgid ] ||"), and the wait loop would then see the
+# old dead group and report "job died" (seen twice, then reproduced, 2026-11-22).
+printf '%%%%bash\np=$(cat /content/job/pgid 2>/dev/null)\nif [[ $p =~ ^[0-9]+$ ]] && [ "$p" -gt 1 ]; then kill -- -$p 2>/dev/null; sleep 2; fi\nrm -rf --one-file-system --preserve-root=all /content/job\nmkdir -p /content/job\n' | c > /dev/null
 # An upload that fails is tried 3 times, 10 s apart, then the job stops with exit 6 before a launch
 # without its files. colab exits 1 on an HTTP error (an unhealthy VM can answer every upload with
 # HTTP 500); without this check the job went on and failed later as "launch failed".
