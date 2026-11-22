@@ -503,7 +503,7 @@ greater than 1.
 # build directory /content/target between jobs, and the last job's files as /content/src and
 # /content/extra (see run.sh), so the next job on the same VM builds incrementally; the job's own
 # files are under /content/job, which `pool.sh release` deletes. Output: <out dir>/summary.tsv (line, exit code, threads, seconds,
-# max RSS kB, [oom-retry]) and <out dir>/out/<n>.log per line. Exit 0 when every line passed.
+# max RSS kB, [oom-retry or dylib-retry]) and <out dir>/out/<n>.log per line. Exit 0 when every line passed.
 # Every argument and computed value is checked before use; an empty or malformed one stops the
 # script with exit 2.
 set -u -o pipefail
@@ -583,10 +583,25 @@ if [ -e tools/icount/build.sh ]; then
   [ -e /content/icount/zed_icount.c ] &&
     export ZED_METER_DRRUN=/opt/dynamorio/bin64/drrun ZED_METER_ICOUNT=/content/icount/libzed_icount.so
 fi
+# A crate that is also a dylib (crate-type = ["rlib", "dylib"]) keeps one file name whatever its
+# features. A build that resolves other features (a `cargo run -p` line, or a checkout whose
+# manifests differ from the last one built here) overwrites dylibs that the other build's
+# fingerprints still take as fresh, and every later build that links them fails with "cannot
+# satisfy dependencies so `std` only shows up once". A step that fails so cleans the build
+# directory, by its literal path, and runs once more, marked dylib-retry; the cost is one cold
+# build, against a VM that would fail every later build.
+cleaned=0
+mixed() { [ $cleaned = 0 ] && command grep -a -q 'cannot satisfy dependencies so' "$1"; }
+reclean() { cleaned=1; cargo clean --target-dir /content/target >> $J/out/clean.log 2>&1; }
 if [ "$PREBUILD" = 0 ]; then
   echo "build skipped: every line is a ! command" > $J/out/build.log
 else
-  s=$(date +%s); cargo test --workspace --no-run > $J/out/build.log 2>&1; echo "build rc=$? secs=$(( $(date +%s) - s ))" >> $J/out/build.log
+  s=$(date +%s); cargo test --workspace --no-run > $J/out/build.log 2>&1; rc=$?
+  if [ $rc -ne 0 ] && mixed $J/out/build.log; then
+    echo "build rc=$rc secs=$(( $(date +%s) - s )) dylib-retry" >> $J/out/clean.log; reclean
+    s=$(date +%s); cargo test --workspace --no-run > $J/out/build.log 2>&1; rc=$?
+  fi
+  echo "build rc=$rc secs=$(( $(date +%s) - s ))" >> $J/out/build.log
 fi
 n=0
 while IFS= read -r line; do
@@ -598,6 +613,12 @@ while IFS= read -r line; do
     s=$(date +%s)
     /usr/bin/time -v -o $J/out/$n.time timeout 3600 bash -c "${line#!}" < /dev/null > $J/out/$n.log 2>&1; rc=$?
     secs=$(( $(date +%s) - s )); rss=$(awk '/Maximum resident/ {print $6}' $J/out/$n.time)
+    if [ $rc -ne 0 ] && mixed $J/out/$n.log; then
+      printf '%s\t%s\t%s\t%s\t%s\tdylib-retry\n' "$line" $rc 0 $secs "$rss" >> $J/out/summary.tsv; reclean
+      s=$(date +%s)
+      /usr/bin/time -v -o $J/out/$n.time timeout 3600 bash -c "${line#!}" < /dev/null > $J/out/$n.log 2>&1; rc=$?
+      secs=$(( $(date +%s) - s )); rss=$(awk '/Maximum resident/ {print $6}' $J/out/$n.time)
+    fi
     printf '%s\t%s\t%s\t%s\t%s\n' "$line" $rc 0 $secs "$rss" >> $J/out/summary.tsv; continue
   fi
   while :; do
@@ -607,6 +628,9 @@ while IFS= read -r line; do
     # A timeout (exit 124) is not retried: one test binary killed inside a line that used its whole hour would otherwise cost another hour at half the threads (found by b22-checkwalk5).
     if [ $rc -ne 0 ] && [ $rc -ne 124 ] && [ $t -gt 1 ] && command grep -a -q -E 'SIGKILL|signal: 9|memory allocation of .* failed|SIGABRT' $J/out/$n.log; then
       printf '%s\t%s\t%s\t%s\t%s\toom-retry\n' "$line" $rc $t $secs "$rss" >> $J/out/summary.tsv; t=$((t / 2)); continue
+    fi
+    if [ $rc -ne 0 ] && mixed $J/out/$n.log; then
+      printf '%s\t%s\t%s\t%s\t%s\tdylib-retry\n' "$line" $rc $t $secs "$rss" >> $J/out/summary.tsv; reclean; continue
     fi
     printf '%s\t%s\t%s\t%s\t%s\n' "$line" $rc $t $secs "$rss" >> $J/out/summary.tsv; break
   done
