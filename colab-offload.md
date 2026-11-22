@@ -128,6 +128,10 @@ present, open internet access (crates.io, static.rust-lang.org and PyPI reachabl
 free disk on `/` and `/content`, running as root. Not present: Rust, and the `time` program
 (`apt-get install -y time` gives `/usr/bin/time -v` for peak memory). Installing Rust with
 `curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal` took 17 s on a 2-core VM.
+`awk` is mawk, not GNU awk: it rejects gawk extensions (`match()` with an array argument,
+`gensub`, `PROCINFO`) with an error on stderr and prints nothing, so a script that parses its own
+logs with awk silently produces empty results there. Install gawk (`apt-get install -y -qq gawk`)
+in the one-time setup when your scripts need it.
 
 ## 4. Running a long job reliably
 
