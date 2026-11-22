@@ -714,9 +714,18 @@ fi
 # satisfy dependencies so `std` only shows up once". A step that fails so cleans the build
 # directory, by its literal path, and runs once more, marked dylib-retry; the cost is one cold
 # build, against a VM that would fail every later build.
+# cargo clean refuses a directory without cargo's CACHEDIR.TAG ("missing or invalid
+# `CACHEDIR.TAG` file"), which cargo writes only into a target directory it made itself; one made
+# first by mkdir has none, and the retry then ran on the same stale build and failed again
+# (2026-11-22). The tag, with cargo's own text, is written first.
 cleaned=0
 mixed() { [ $cleaned = 0 ] && command grep -a -q 'cannot satisfy dependencies so' "$1"; }
-reclean() { cleaned=1; cargo clean --target-dir /content/target >> $J/out/clean.log 2>&1; }
+reclean() {
+  cleaned=1
+  [ ! -d /content/target ] || [ -e /content/target/CACHEDIR.TAG ] ||
+    printf 'Signature: 8a477f597d28d172789f06886806bc55\n' > /content/target/CACHEDIR.TAG
+  cargo clean --target-dir /content/target >> $J/out/clean.log 2>&1
+}
 if [ "$PREBUILD" = 0 ]; then
   echo "build skipped: every line is a ! command" > $J/out/build.log
 else
