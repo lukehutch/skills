@@ -323,6 +323,10 @@ A VM moves through these states:
   `<shape><k>` with the lowest free `k`. Exit 3 means `colab new` failed (account limit
   reached, or `Service Unavailable`); the caller then tries another shape, or waits 15 s and
   tries again; it never falls back to running the work locally.
+  Exit 4 means the owner already holds a busy VM: each client holds one VM at a time and runs
+  its next job on it, so that a client taking a second VM never keeps the others waiting.
+  Owners matching the extended regex `COLAB_POOL_MULTI` (for example a test runner that spreads
+  its pieces over several VMs) are exempt.
 - **`release <name>`** is called by the client when its job is finished, also when the job
   failed. On the VM it kills the job's process group (the job wrote its process group id to
   `/content/job/pgid`) and deletes `/content/job`. It does **not** delete the toolchain
@@ -365,6 +369,8 @@ To measure a shape's limit, acquire VMs of that shape until `new` fails, and rea
 # Every change holds an flock on pool.lock, so two agents never get the same VM.
 # Usage:
 #   pool.sh acquire <shape> <owner>   prints a VM name; exit 3 when no VM of that shape can be had
+#                                     exit 4 when <owner> already holds a busy VM (one VM per client;
+#                                     owners matching $COLAB_POOL_MULTI, an extended regex, may hold several)
 #   pool.sh release <name>            kills the job, deletes /content/job on the VM, marks it idle
 #   pool.sh reap [seconds]            stops every VM idle longer than <seconds> (default 60)
 #   pool.sh list
@@ -407,6 +413,14 @@ acquire)
   [[ $owner =~ ^[A-Za-z0-9._-]+$ ]] || die "acquire: owner must be a non-empty label without spaces, got '$owner'"
   f=$(flag "$shape") || die "unknown shape '$shape'"
   exec 9>"$K"; flock 9 || die "cannot lock $K"
+  # One VM per client: a client that takes a second VM while it holds one keeps others waiting.
+  # A test runner that spreads pieces over several VMs is named in COLAB_POOL_MULTI (an extended
+  # regex matched against the whole owner; empty, the default, exempts no one).
+  multi=${COLAB_POOL_MULTI-}
+  if [ -z "$multi" ] || ! [[ $owner =~ ^($multi)$ ]]; then
+    h=$(awk -v o="$owner" '$3 == "busy" && $4 == o {print $1; exit}' "$P")
+    [ -z "$h" ] || { echo "pool.sh: $owner already holds $h; run the next job on it, or release it first" >&2; exit 4; }
+  fi
   ts=$(now) || exit 2
   n=$(awk -v s="$shape" '$2 == s && $3 == "idle" {print $1; exit}' "$P")
   if [ -n "$n" ]; then
