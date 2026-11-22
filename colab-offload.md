@@ -549,6 +549,26 @@ rsync -rlpc --delete $J/extra/ /content/extra/ || { echo "run.sh: rsync of the e
 pushd /content/src > /dev/null || exit 1
 nc=$(nproc); [[ $nc =~ ^[0-9]+$ ]] || nc=1
 export CARGO_TARGET_DIR=/content/target CARGO_BUILD_JOBS=$nc EXTRA_DIR=/content/extra
+# Colab VMs have no hardware counter of instructions (dmesg: "no PMU driver, software events
+# only"; perf_event_open of the instructions counter fails). A checkout that ships a DynamoRIO
+# client at tools/icount (as zed does: build.sh, install-dynamorio.sh, zed_icount.c) gets
+# DynamoRIO 11.3.0 at /opt/dynamorio and the client built at /content/icount, once per VM and
+# again when the client's source changes, and the two variables that name them; its test
+# binaries then count instructions in software. Measured 2026-11-22 on an hm VM: 1.12x slower
+# than native at 0.9 s of work (plus about 0.08 s of start-up), the same count on every run, and
+# ratios within 0.1% of the hardware counter's. valgrind is for tests that run it. Other
+# checkouts skip this.
+if [ -e tools/icount/build.sh ]; then
+  if ! cmp -s tools/icount/zed_icount.c /content/icount/zed_icount.c; then
+    { { apt-get install -y -qq cmake g++ valgrind || { apt-get update -qq && apt-get install -y -qq cmake g++ valgrind; }; } &&
+      bash tools/icount/install-dynamorio.sh /opt/dynamorio &&
+      bash tools/icount/build.sh /opt/dynamorio /content/icount &&
+      cp tools/icount/zed_icount.c /content/icount/zed_icount.c; } >> $J/setup.log 2>&1 ||
+      echo "run.sh: building zed_icount failed (setup.log); benchmarks measure processor time" > $J/out/icount.log
+  fi
+  [ -e /content/icount/zed_icount.c ] &&
+    export ZED_METER_DRRUN=/opt/dynamorio/bin64/drrun ZED_METER_ICOUNT=/content/icount/libzed_icount.so
+fi
 if [ "$PREBUILD" = 0 ]; then
   echo "build skipped: every line is a ! command" > $J/out/build.log
 else
