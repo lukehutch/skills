@@ -224,7 +224,7 @@ running. Cores and RAM are what the VM reports (`nproc`, `free -g`).
 
 | Shape (`new` flags) | Cores | RAM | Units/hr | Units per core-hour | Notes |
 |---|---|---|---|---|---|
-| standard CPU (none) | 2 | 12 GB | 0.08 | 0.040 | Cheapest per core |
+| standard CPU (none) | 2 | 12 GB | 0.08 | 0.040 | Cheapest per core; small test runs only: a cold build of a large Rust workspace on 2 cores ran 43 min with no result |
 | high-mem CPU (`--high-mem`) | 8 | 50 GB | 0.26 | 0.033 | Best value per core and per GB; the workhorse |
 | T4 (`--gpu T4`) | 2 | 12 GB | 1.15 | 0.58 | Only worth it for GPU work |
 | T4 high-mem (`--gpu T4 --high-mem`) | 8 | 50 GB | 1.57 | 0.20 | |
