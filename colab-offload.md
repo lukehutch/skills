@@ -622,6 +622,13 @@ vm=${1-}; wt=${2-}; out=${3-}; tests=${4-}; extra=${5-}
 [[ $out == /?* ]] && [ "$out" != / ] || die "out dir '$out' is not an absolute path below /"
 [ -s "$tests" ] || die "tests file '$tests' is missing or empty"
 [ -z "$extra" ] || { [[ $extra == /?* ]] && [ -d "$extra" ]; } || die "extra dir '$extra' is not an absolute path of a directory"
+# The source sent is the files `git ls-files -co --exclude-standard` lists in the checkout. In a
+# directory git does not know (a snapshot made with `git archive`, which has no .git) it lists
+# none, and tar of an empty list still writes a non-empty archive: the VM got an empty source,
+# every test line failed with rustup's "no default is configured", and the job reported nothing
+# wrong (FARM-job-empty-file-list, 2026-11-23).
+[ -n "$(git -C "$wt" ls-files -co --exclude-standard 2>/dev/null | head -c 1)" ] ||
+  die "checkout '$wt' has no files git lists (not a git checkout, or none tracked or untracked): the VM would get an empty source"
 # 0 when every non-empty line is a ! command: no prebuild (see the head).
 prebuild=1
 command grep -a -q -v -E '^(!|$)' "$tests" || prebuild=0
@@ -1111,6 +1118,7 @@ for offloading:
 | A change to `farm_run.sh` while main-watch runs | main-watch copies the runner when it starts, so it kept the old one | Restart main-watch after a runner change. `farm_run.sh` reruns a part on another VM when `job.sh` exits with anything other than 0 or 1 |
 | Reading a line's exit from row k of `summary.tsv` (FARM-retry-rows-read-as-lines and FARM-share-exit1-pieces-pass, 2026-11-23) | A `!` line run again after `cannot satisfy dependencies so` has a `dylib-retry` row with the first attempt's rc 1 before its final row; `farm_run.sh` read row 1, so a share whose pieces all passed exited 1 and a merge check reported tests/full FAILED, and `--commands` lost the job (the row count disagreed) | Take a line's exit only from the rows whose field 6 is empty, line k's from the k-th of them, as `job.sh`'s own last check does (`$6 == ""`); `farm_run.sh`'s `final_rows` does this |
 | A step that needs git history in a job (FAIL-merge-check-doc-skipped-on-vm, 2026-11-23) | The job's copy is a tar of the tracked and untracked files with no `.git`, so `git merge-base`, `git diff` and `git ls-files` fail there: `tools/check_changed_docs.sh` in merge_check's steps printed "The doc check of changed packages is skipped" and checked nothing | Find what needs the history on this machine and send it with the job: `farm_run.sh --commands` sends `check_changed_docs.sh --changes` with each command, and the check reads it from the file `ZED_DOC_CHANGES` names |
+| A job sent from a snapshot made with `git archive` (FARM-job-empty-file-list, 2026-11-23) | The snapshot has no `.git`, so `git ls-files` lists nothing, the packed source was empty, every test line failed with rustup's "no default is configured", and the job reported nothing wrong | `job.sh` stops with exit 2 when git lists no file in the checkout; send jobs from a git checkout or worktree |
 | A merge check in a fresh worktree | It did nothing: the worktree had no pre-built dependencies | Run `seed-build.sh` first |
 | VM results from before the stale-build fix (11:15Z, 2026-11-22) | Jobs that built in the unpacked copy could reuse another checkout's code (section 4) | Rerun any VM result from before that time that a conclusion rests on |
 | An empty variable in `sed -i "/^$n /d"` | Would delete every line of the pool file | Check every value against a pattern first; `set -u` (section 6) |
