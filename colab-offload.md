@@ -61,7 +61,7 @@ string and later commands become ambiguous.
 | Command | What it does |
 |---|---|
 | `colab new -s N [--high-mem] [--gpu T4\|L4\|G4\|H100\|A100] [--tpu V5E1\|V6E1]` | Allocates a VM (billing starts) |
-| `colab exec -s N [-f file.py] [--timeout S] [--env K=V]` | Runs Python on the VM's kernel; code from `-f` or stdin |
+| `colab exec -s N [-f file.py] [--timeout S] [--env K=V]` | Runs Python on the VM's kernel; code from `-f` or stdin only: a command given as an argument is refused |
 | `colab upload -s N <local> <remote>` / `colab download -s N <remote> <local>` | Copies one file |
 | `colab ls -s N [path]` / `colab rm -s N <path>` | Lists / deletes files on the VM (`ls` lists files, **not** sessions) |
 | `colab sessions` | Lists your live VMs, from the server |
@@ -1116,3 +1116,4 @@ for offloading:
 | An empty variable in `sed -i "/^$n /d"` | Would delete every line of the pool file | Check every value against a pattern first; `set -u` (section 6) |
 | `kill -- -$(cat pgid)` | A pgid file holding 1 would kill every process on the VM; and it misses a command a `timeout` inside the job moved into its own process group | Kill the session, `pkill -s`, and accept only a number greater than 1 (`pkill -s 0` is the caller's session) |
 | `--tpu v5e1` | Not in `colab new --help`, which lists `V5E1` and `V6E1` | Use the spelling the help lists |
+| `colab exec -s N 'ls /content/job; ps -eo pid,args'` (the command as an argument, as with `ssh host cmd`) | Refused before anything runs: `Got unexpected extra argument(s) (...)` and the usage text, exit 2; a loop over VMs prints only usage text, which can be misread as "the VMs are down" (2026-11-23) | Pipe the cell on stdin: `printf '%%%%bash\nls /content/job\n' \| colab --auth=adc exec -s N --timeout 90`. Every literal `%` in the body is doubled too (`date +%%H`, `--time-style=+%%H:%%M`), since the body is `printf`'s format string; or write the cell to a file and pass `-f` |
