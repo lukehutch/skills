@@ -720,7 +720,13 @@ export CARGO_TARGET_DIR=/content/target CARGO_BUILD_JOBS=$nc EXTRA_DIR=/content/
 # different counts) and valgrind callgrind (21x). The software count is about 133,000
 # instructions below the hardware count at both sizes measured (process start and exit,
 # inferred), which leaves ratios unchanged. Without the client the meter measures processor
-# time: never report such a ratio as an instruction count. A branch older than tools/icount
+# time: never report such a ratio as an instruction count. A runner that reads the job's out/
+# must fail a benchmark run when out/icount.log exists (written below when the client's build
+# failed) or a `bench` line says `work=` where a count says `instr=` (an old branch writes no
+# icount.log): zed's scaling check holds processor time to twice the limit (21, not 10.5), so
+# such a run passes silently otherwise. zed's tools/farm_run.sh does this under --bench, with a
+# line `farm: benchmarks measured processor time, not instructions, on <VM> ...` and exit 1
+# (FARM-icount-fallback-silent, 2026-11-23). A branch older than tools/icount
 # gets processor time too, and the meter's own tests (scaling_tests.rs) fail on a VM; merge
 # main into the branch. The meter reruns a test under DynamoRIO only when the test binary's
 # arguments include `--exact` (zed-impl crates/zed-meter-settings/src/lib.rs, the check on
@@ -756,6 +762,20 @@ reclean() {
     printf 'Signature: 8a477f597d28d172789f06886806bc55\n' > /content/target/CACHEDIR.TAG
   cargo clean --target-dir /content/target >> $J/out/clean.log 2>&1
 }
+# The clean does not cure a ! line that runs two builds of other features itself, or a -p build
+# after a workspace build: its retry mixes the dylibs again (FARM-dylib-mix-bang-lines, b22-tests7
+# 2026-11-23, l43, fresh target directories: `cargo test -p zedc-presburger --no-run` then
+# `cargo test -p zed-tests --test l01_38_omega_test --no-run` failed, rc 101, 52 such errors in
+# zedc-preimage; `cargo build -p zed-tools --bin plan --bin sync` after the workspace build in
+# /content/target failed the same way; with cargo's hashed dylib names (__CARGO_DEFAULT_LIB_METADATA,
+# as wt/zrun sets) the first pair still failed, and with CARGO_RESOLVER_FEATURE_UNIFICATION=workspace
+# too). The error comes from std linked statically into each dylib: with -C prefer-dynamic, as wt/zrun
+# builds locally, every dylib and binary loads the one libstd, and the same pair passed (l43, fresh
+# directory). So such a ! line runs once more with prefer-dynamic in its own build directory,
+# /content/target-pd, kept across jobs; the rpaths let a binary there run without cargo setting
+# the library path. /content/target keeps static std, so the benchmarks and the prebuild measure
+# what they measured before; a plain line after a mixed ! line still gets the clean above.
+pdflags="-C prefer-dynamic -C link-arg=-Wl,-rpath,$(rustc --print target-libdir) -C link-arg=-Wl,-rpath,\$ORIGIN -C link-arg=-Wl,-rpath,\$ORIGIN/deps -Zunstable-options --jobs-frontend=1"
 if [ "$PREBUILD" = 0 ]; then
   echo "build skipped: every line is a ! command" > $J/out/build.log
 else
@@ -780,10 +800,10 @@ while IFS= read -r line; do
     s=$(date +%s)
     /usr/bin/time -v -o $J/out/$n.time timeout 3600 bash -c "${line#!}" < /dev/null > $J/out/$n.log 2>&1; rc=$?
     secs=$(( $(date +%s) - s )); rss=$(awk '/Maximum resident/ {print $6}' $J/out/$n.time)
-    if [ $rc -ne 0 ] && mixed $J/out/$n.log; then
-      printf '%s\t%s\t%s\t%s\t%s\tdylib-retry\n' "$line" $rc 0 $secs "$rss" >> $J/out/summary.tsv; reclean
+    if [ $rc -ne 0 ] && command grep -a -q 'cannot satisfy dependencies so' $J/out/$n.log; then
+      printf '%s\t%s\t%s\t%s\t%s\tdylib-retry\n' "$line" $rc 0 $secs "$rss" >> $J/out/summary.tsv
       s=$(date +%s)
-      /usr/bin/time -v -o $J/out/$n.time timeout 3600 bash -c "${line#!}" < /dev/null > $J/out/$n.log 2>&1; rc=$?
+      CARGO_TARGET_DIR=/content/target-pd RUSTFLAGS="$pdflags" /usr/bin/time -v -o $J/out/$n.time timeout 3600 bash -c "${line#!}" < /dev/null > $J/out/$n.log 2>&1; rc=$?
       secs=$(( $(date +%s) - s )); rss=$(awk '/Maximum resident/ {print $6}' $J/out/$n.time)
     fi
     printf '%s\t%s\t%s\t%s\t%s\n' "$line" $rc 0 $secs "$rss" >> $J/out/summary.tsv; continue
@@ -1074,6 +1094,7 @@ for offloading:
 | A cold build on std3 (2 cores) under the `job.sh` from before aed21ad (2026-11-22) | The progress log stopped at `Compiling zed-tests` after 3668 s; with no new output for 1800 s the stall check stopped the job before any test ran. A cold workspace build on std takes about 3764 s | The stall check now also counts processor time (aed21ad), so a compile no longer looks stalled; do cold builds on hm, l4 or v5e when one is free (see section 6) |
 | All 15 pool VMs held by long-running agents and their merge checks (2026-11-22) | An agent got exit 3 from `pool.sh acquire` on hm, l4 and v5e for about 30 minutes; std was the only shape it could get | Expected at the pool limit: keep retrying every 15 s and take any shape; an agent that holds a VM while waiting for its own results keeps the others waiting, so release a VM once its job's results are read and no next job is ready |
 | Jobs from different checkouts sharing one VM's build directory (FARM-jobsh-p-builds-mix-dylibs, 2026-11-22) | A crate built as both rlib and dylib keeps one file name whatever its features. A build from another checkout, with different manifests, overwrote dylibs that the first build's fingerprints still took as fresh, and every later build that linked them failed with "cannot satisfy dependencies so \`std\` only shows up once" (b22-preimage5 j2-j4; b22-presburger4 colab-7 and colab-8 on hm5). The VM failed every later build | When the workspace build or any line fails with that message, `job.sh` runs `cargo clean` on the fixed build directory (`/content/target`) and runs the step once more. At most one clean per job, so a step that still fails is reported failed, not retried for ever; the failed try stays in `summary.tsv` tagged `dylib-retry`. Cost: one cold build (about 6 min on hm). merge_check and main-watch run through `job.sh` and get the same repair. Tested with a fake cargo: corrupt build, corrupt single line, error that persists |
+| A `!` line that builds other features itself: two `-p` builds, or `cargo run --bin plan`/`--bin sync` after the workspace build (FARM-dylib-mix-bang-lines, FARM-job-prefer-dynamic, 2026-11-23) | The clean above does not cure it: the line's second build mixes the dylibs again even in a fresh directory, since std is linked statically into each dylib (l43: `cargo test -p zedc-presburger --no-run` then the omega test binary, rc 101; `cargo build -p zed-tools --bin plan --bin sync` after the workspace build, rc 101). Hashed dylib names (`__CARGO_DEFAULT_LIB_METADATA`) and feature unification do not cure it | A `!` line that fails with that message runs once more with `RUSTFLAGS="-C prefer-dynamic"` plus rpaths to the sysroot lib dir, `$ORIGIN` and `$ORIGIN/deps`, in its own build directory `/content/target-pd` (b22-tests7 job 6 on l43: plan, `sync --check` and the presburger/omega pair each failed, were retried and passed, rc 0). `/content/target` keeps static std, so benchmarks measure what they did. A line that pipes into `echo` hides the rc and is never retried: end the line with the command whose rc counts |
 | A test opening an unnamed file with `O_TMPFILE` (zed-rt `which_mappings`, 2026-11-22) | The VM's temporary directory is on overlayfs, whose `open(O_TMPFILE)` fails with EOPNOTSUPP; the child process panicked at its first assertion and the parent reported only "exit 101" | On EOPNOTSUPP, map a `memfd_create` file instead (zed-impl 007be491d; 13 of 13 limits tests pass on l41). Correct for a data-limit test because `may_expand_vm` (mm/mmap.c) applies `RLIMIT_DATA` by the mapping's flags, not by the file behind it, checked against the kernel source. Make a parent test print the child's standard error, so a failure on a VM shows its cause (section 3) |
 | A second `job.sh` run on a VM still held (2026-11-22) | The launch runs only if `/content/job/pgid` does not exist (`[ -s pgid ] ||`, so a retried launch cannot start the run twice). After the first job that file still held the finished job's group, so the second job never started; the wait loop saw a dead group and reported "job died". Reproduced on std5: first job rc 0, second rc 5 | Each job first clears `/content/job` as `pool.sh release` does (kill the old session, delete the directory) and confirms `pgid` is gone before the launch (section 2, step 2; `job.sh` "CLEARED" check) |
 | `timeout 3600` on each line of `job.sh` taken as the test limit | Two test lines ran with no 60 s cap, and a red benchmark ran 337 s | Put `timeout 60` (or the benchmark's own limit) in each `!` line (section 6) |
