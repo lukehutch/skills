@@ -1041,7 +1041,8 @@ echo "$(date -u +%FT%TZ) jobs of $A ended"
 
 A label that is a prefix of another (`b22-misc7` and `b22-misc70`) matches both; pick labels
 that are not prefixes of each other.
-- Read `summary.tsv`; analyze a failure on the VM like a local one, including failures that
+- Read `summary.tsv` (a line's exit is on its final row, field 6 empty; a row ending in
+  `oom-retry` or `dylib-retry` is an attempt run again); analyze a failure on the VM like a local one, including failures that
   do not happen locally (memory, thread count, a host path, a missing tool).
 - Never put a credential, token or email address on a VM, in a tests file or in a kept log;
   filter `@` lines and URLs (a failed upload prints a URL whose query carries a token) from
@@ -1108,6 +1109,7 @@ for offloading:
 | The local /tmp quota (51.5 GB per user) full, 2026-11-22 | Every shell command failed before it ran (EDQUOT), `df` and deletions included; two agents and the orchestrator stopped mid-task. Most of the space (34 GB) was job folders in one session's scratchpad, each keeping its tarballs (about 49 MB a job) | The user frees space from their own terminal. Empty each tarball after its upload (section 6) and keep scratch build copies off /tmp |
 | `run_tests.sh` on a VM | Every piece starts under `systemd-run --user`, and a VM has no user systemd bus | On a VM the farm runs each piece with a 112 GiB memory limit of its own instead |
 | A change to `farm_run.sh` while main-watch runs | main-watch copies the runner when it starts, so it kept the old one | Restart main-watch after a runner change. `farm_run.sh` reruns a part on another VM when `job.sh` exits with anything other than 0 or 1 |
+| Reading a line's exit from row k of `summary.tsv` (FARM-share-exit1-pieces-pass, 2026-11-23) | A `!` line run again after `cannot satisfy dependencies so` has a `dylib-retry` row with the first attempt's rc 1 before its final row; `farm_run.sh` read row 1, so a share whose pieces all passed exited 1 and a merge check reported tests/full FAILED, and `--commands` lost the job (the row count disagreed) | Take a line's exit only from the rows whose field 6 is empty, line k's from the k-th of them, as `job.sh`'s own last check does (`$6 == ""`) |
 | A merge check in a fresh worktree | It did nothing: the worktree had no pre-built dependencies | Run `seed-build.sh` first |
 | VM results from before the stale-build fix (11:15Z, 2026-11-22) | Jobs that built in the unpacked copy could reuse another checkout's code (section 4) | Rerun any VM result from before that time that a conclusion rests on |
 | An empty variable in `sed -i "/^$n /d"` | Would delete every line of the pool file | Check every value against a pattern first; `set -u` (section 6) |
