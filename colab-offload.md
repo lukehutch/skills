@@ -722,7 +722,10 @@ export CARGO_TARGET_DIR=/content/target CARGO_BUILD_JOBS=$nc EXTRA_DIR=/content/
 # inferred), which leaves ratios unchanged. Without the client the meter measures processor
 # time: never report such a ratio as an instruction count. A branch older than tools/icount
 # gets processor time too, and the meter's own tests (scaling_tests.rs) fail on a VM; merge
-# main into the branch.
+# main into the branch. The meter reruns a test under DynamoRIO only when the test binary's
+# arguments include `--exact` (zed-impl crates/zed-meter-settings/src/lib.rs, the check on
+# `--exact` in start_under_dynamorio): a job line that names a benchmark without `--exact`
+# measures processor time even on a VM with the client (found 2026-11-22 by a job that did so).
 if [ -e tools/icount/build.sh ]; then
   if ! cmp -s tools/icount/zed_icount.c /content/icount/zed_icount.c; then
     { { apt-get install -y -qq cmake g++ valgrind || { apt-get update -qq && apt-get install -y -qq cmake g++ valgrind; }; } &&
