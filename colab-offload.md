@@ -730,8 +730,10 @@ export CARGO_TARGET_DIR=/content/target CARGO_BUILD_JOBS=$nc EXTRA_DIR=/content/
 # time: never report such a ratio as an instruction count. A runner that reads the job's out/
 # must fail a benchmark run when out/icount.log exists (written below when the client's build
 # failed) or a `bench` line says `work=` where a count says `instr=` (an old branch writes no
-# icount.log): zed's scaling check holds processor time to twice the limit (21, not 10.5), so
-# such a run passes silently otherwise. zed's tools/farm_run.sh does this under --bench, with a
+# icount.log): a ratio of processor time is not an instruction count, even though zed's scaling
+# check now holds every meter to the limit itself (10.5, at or over fails; until 2026-11-23
+# processor time had twice the limit, 21: FAIL-scaling-check-passes-over-limit), and it takes
+# the fastest of 5 runs in 3 tries, so such a run can pass where instructions would fail. zed's tools/farm_run.sh does this under --bench, with a
 # line `farm: benchmarks measured processor time, not instructions, on <VM> ...` and exit 1
 # (FARM-icount-fallback-silent, 2026-11-23). A branch older than tools/icount
 # gets processor time too, and the meter's own tests (scaling_tests.rs) fail on a VM; merge
