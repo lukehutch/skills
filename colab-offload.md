@@ -578,7 +578,9 @@ This is the complete job runner used here, generalized. It sends a git checkout 
 and untracked files, not ignored ones) and an optional second directory to the VM, builds,
 runs each line of a tests file with the out-of-memory back-off of section 4, and brings back
 the logs. A tests-file line that starts with `!` is run as a shell command instead (clippy, a
-benchmark with its own flags, a script), once, with no back-off. Adapt the build and test
+benchmark with its own flags, a script), once, with no back-off. It must exit with its build
+command's code (`cargo ...; r=$?; echo ...; exit $r`): the dylib-retry runs only on a nonzero
+exit, so a line ending in `echo` hides the failure and is never retried. Adapt the build and test
 commands in `run.sh` to your project.
 
 Every argument is checked before it is used, and an empty or malformed one stops the script
