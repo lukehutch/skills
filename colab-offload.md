@@ -741,6 +741,10 @@ export CARGO_TARGET_DIR=/content/target CARGO_BUILD_JOBS=$nc EXTRA_DIR=/content/
 # arguments include `--exact` (zed-impl crates/zed-meter-settings/src/lib.rs, the check on
 # `--exact` in start_under_dynamorio): a job line that names a benchmark without `--exact`
 # measures processor time even on a VM with the client (found 2026-11-22 by a job that did so).
+# A job line that names a benchmark also needs `--nocapture`: libtest keeps the output of a
+# passing test, so without it the log has no `bench ... instr=` line to read the ratio from
+# (b22-checkrest10, 2026-11-23; FARM-bench-nocapture). zed's tools/run_tests.sh --bench passes
+# both flags to each benchmark piece.
 if [ -e tools/icount/build.sh ]; then
   if ! cmp -s tools/icount/zed_icount.c /content/icount/zed_icount.c; then
     { { apt-get install -y -qq cmake g++ valgrind || { apt-get update -qq && apt-get install -y -qq cmake g++ valgrind; }; } &&
