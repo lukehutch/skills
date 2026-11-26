@@ -755,7 +755,9 @@ if [ -e tools/icount/build.sh ]; then
       cp tools/icount/zed_icount.c /content/icount/zed_icount.c; } >> $J/setup.log 2>&1 ||
       echo "run.sh: building zed_icount failed (setup.log); benchmarks measure processor time" > $J/out/icount.log
   fi
-  [ -e /content/icount/zed_icount.c ] &&
+  # Only a client built from this tree's source: after a failed build the stored copy differs
+  # (it is written last), so a half-built .so is never used (b22-scale1, 2026-11-26).
+  cmp -s tools/icount/zed_icount.c /content/icount/zed_icount.c &&
     export ZED_METER_DRRUN=/opt/dynamorio/bin64/drrun ZED_METER_ICOUNT=/content/icount/libzed_icount.so
 fi
 # A crate that is also a dylib (crate-type = ["rlib", "dylib"]) keeps one file name whatever its
