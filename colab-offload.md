@@ -716,6 +716,13 @@ rsync -rlpc --delete $J/src/ /content/src/ || { echo "run.sh: rsync of the sourc
 rsync -rlpc --delete $J/extra/ /content/extra/ || { echo "run.sh: rsync of the extra files failed" >&2; exit 2; }
 pushd /content/src > /dev/null || exit 1
 nc=$(nproc); [[ $nc =~ ^[0-9]+$ ]] || nc=1
+# The compiler's front end (nightly --jobs-frontend) runs on one thread per core on a VM of 8 cores
+# or more, and on 1 below that: measured 2:14 at 1 thread, 1:56 at 8 on a cold test build, about
+# 14% faster (zed-impl, 2026-11-18). A VM runs one job, so the threads do not compete with other
+# builds. RUSTFLAGS replaces a project's build.rustflags in .cargo/config.toml: copy any flags the
+# project sets there into this line.
+fe=1; [ "$nc" -ge 8 ] && fe=$nc
+export RUSTFLAGS="-Zunstable-options --jobs-frontend=$fe"
 export CARGO_TARGET_DIR=/content/target CARGO_BUILD_JOBS=$nc EXTRA_DIR=/content/extra
 # hm and std Colab VMs have no hardware counter of instructions (l4 and v5e not checked; dmesg: "no PMU driver, software events
 # only"; perf_event_open of the instructions counter fails). A checkout that ships a DynamoRIO
@@ -792,7 +799,7 @@ reclean() {
 # /content/target-pd, kept across jobs; the rpaths let a binary there run without cargo setting
 # the library path. /content/target keeps static std, so the benchmarks and the prebuild measure
 # what they measured before; a plain line after a mixed ! line still gets the clean above.
-pdflags="-C prefer-dynamic -C link-arg=-Wl,-rpath,$(rustc --print target-libdir) -C link-arg=-Wl,-rpath,\$ORIGIN -C link-arg=-Wl,-rpath,\$ORIGIN/deps -Zunstable-options --jobs-frontend=1"
+pdflags="-C prefer-dynamic -C link-arg=-Wl,-rpath,$(rustc --print target-libdir) -C link-arg=-Wl,-rpath,\$ORIGIN -C link-arg=-Wl,-rpath,\$ORIGIN/deps -Zunstable-options --jobs-frontend=$fe"
 if [ "$PREBUILD" = 0 ]; then
   echo "build skipped: every line is a ! command" > $J/out/build.log
 else
