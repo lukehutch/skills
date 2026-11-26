@@ -843,7 +843,8 @@ greater than 1.
 # Runs cargo builds and tests of one git checkout on a pooled Colab VM and brings the logs back.
 # Usage: job.sh <vm> <checkout> <out dir> <tests file> [<extra dir>]
 #   <vm>          a name from `pool.sh acquire`
-#   <checkout>    absolute path of the checkout to test (tracked and untracked, non-ignored files)
+#   <checkout>    absolute path of the checkout to test (tracked and untracked, non-ignored files;
+#                 on the VM git tracks only the tracked ones, see tracked.lst below)
 #   <out dir>     absolute path of a new local directory for the logs
 #   <tests file>  one line per run: the arguments after `cargo test`, e.g. `-p mycrate --test foo`,
 #                 or a shell command after a !, e.g. `!cargo clippy --all-targets -- -D warnings`
@@ -897,6 +898,15 @@ c() { local s=${2:-120}; timeout -k 5 "$s" colab --auth=adc exec -s "$vm" --time
 gone() { command grep -a -q -E "Session '[^']*' (not found|appears to be lost)" <<<"$1"; }
 vanished() { echo "job died on $vm: job.sh: the VM is gone from the Colab session list ($1)"; exit 5; }
 pushd "$wt" > /dev/null && { git ls-files -z -co --exclude-standard | tar --null -T - -czf "$out/src.tgz" ; } ; popd > /dev/null
+# The untracked files are sent for the build and for ! lines that read them, but the VM's git
+# tracks only what the checkout's git tracks: run.sh adds the paths of tracked.lst, not all files.
+# With `git add -A` there, a test that reads `git ls-files` also read the untracked scratch files
+# on the VM (a citation check failed on an untracked tar of an old tree, 2026-11-26) and not on
+# the local machine. Tracked files deleted from the checkout are left out of the list, since
+# `git add` of a path that is not there fails.
+pushd "$wt" > /dev/null && { git ls-files -z | while IFS= read -r -d '' f; do
+  [ -e "$f" ] || [ -L "$f" ] && printf '%s\0' "$f"; done > "$out/tracked.lst" ; } ; popd > /dev/null
+[ -f "$out/tracked.lst" ] || die "writing the list of tracked files failed"
 if [ -n "$extra" ]; then
   pushd "$extra" > /dev/null && { git ls-files -z | tar --null -T - -czf "$out/extra.tgz" ; } ; popd > /dev/null
   [ -s "$out/extra.tgz" ] || die "packing $extra failed"
@@ -932,8 +942,9 @@ source "$HOME/.cargo/env" || { echo "run.sh: setup failed: no $HOME/.cargo/env" 
 mkdir -p $J/src $J/extra $J/out /content/src /content/extra
 tar xzf $J/src.tgz -C $J/src; tar xzf $J/extra.tgz -C $J/extra
 pushd $J/src > /dev/null || exit 1
-# The tarball holds no .git, and tests that call git (git ls-files) need a repository.
-git init -q && git add -A && git -c user.name=job -c user.email=job commit -qm snapshot
+# The tarball holds no .git, and tests that call git (git ls-files) need a repository. Only the
+# checkout's tracked files are added (see tracked.lst); -f adds a tracked file .gitignore matches.
+git init -q && git add -f --pathspec-from-file=$J/tracked.lst --pathspec-file-nul && git -c user.name=job -c user.email=job commit -q --allow-empty -m snapshot
 popd > /dev/null
 # Never build in the unpacked copy: tar restores each file's original mtime, so with a target
 # dir shared by several checkouts' jobs, a file edited before another checkout's last build
@@ -1115,7 +1126,7 @@ done
 # without its files. colab exits 1 on an HTTP error (an unhealthy VM can answer every upload with
 # HTTP 500); without this check the job went on and failed later as "launch failed".
 # PIPESTATUS[0] is the upload's own exit, not grep's or tail's.
-for f in src.tgz extra.tgz tests.txt run.sh; do
+for f in src.tgz extra.tgz tracked.lst tests.txt run.sh; do
   for try in 1 2 3; do
     timeout 600 colab --auth=adc upload -s "$vm" "$out/$f" "/content/job/$f" 2>&1 | scrub | tail -1
     [ "${PIPESTATUS[0]}" = 0 ] && break
@@ -1284,6 +1295,9 @@ are what was given to the agents here):
   `pool.sh release`, never `colab stop`. Release also after a failure. Hold one VM at a time.
 - Run `job.sh` in the background and keep working; do not poll it. Do not end the turn while
   a job is still running: an agent that stops then sits idle until someone resumes it.
+- Never wait for a job with a loop on `pgrep -f <script name>`: the waiting shell's own command
+  line holds that name, so pgrep always matches it and the loop never ends (a waiter hung 12 h
+  this way, 2026-11-26). Wait for the background task's completion notice or the `job rc=` line.
 
 ### Waiting for an agent's jobs (orchestrator)
 
