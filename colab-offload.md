@@ -285,7 +285,7 @@ figure is a single reading. Billing is per VM, not per core: an 8-core VM costs 
 
 | Shape (`new` flags) | Cores | RAM | Units/hr | Units per core-hour | Notes |
 |---|---|---|---|---|---|
-| standard CPU (none) | 2 | 12 GB | 0.08 | 0.040 | Cheapest per core; small test runs only: a cold build of a large Rust workspace on 2 cores ran 43 min with no result |
+| standard CPU (none) | 2 | 12 GB | 0.08 | 0.040 | Cheapest per hour, not per build: a cold workspace build takes about 4.6 times as long as on high-mem and costs more units (see "2 cores against 8 cores" below). Small test runs on an already built tree only |
 | high-mem CPU (`--high-mem`) | 8 | 50 GB | 0.26 | 0.033 | Best value per core and per GB; the workhorse. AMD EPYC 7B12, 226 GB disk |
 | T4 (`--gpu T4`) | 2 | 12 GB | 1.15 | 0.58 | Only worth it for GPU work |
 | T4 high-mem (`--gpu T4 --high-mem`) | 8 | 50 GB | 1.57 | 0.20 | |
@@ -314,6 +314,43 @@ Ultra account; Colab does not publish them and says they vary):
 | A100 | not measured |
 
 GPU and TPU VMs did not count against the CPU limit.
+
+**The limits above did not hold on 2026-11-26.** With 8 VMs live (3 high-mem, 1 standard,
+2 L4, 2 TPU v5e-1), every `colab new --high-mem` failed with `Allocation refused
+(precondition failed)`: 66 tries over 18 min by one client, and 15 or more by another at the
+same time. That is below the 5 high-mem measured earlier. Earlier the same day the same error
+cleared after 24 tries at 15 s intervals with fewer VMs live. So the limit may be on the
+total number of VMs, or on something else Colab does not report. The message does not say
+which limit was reached. Treat it as "full": stop idle VMs (`pool.sh reap 60`), retry every
+15 s, and do not count on a fixed number of VMs.
+
+### 2 cores against 8 cores
+
+A Rust workspace build (`cargo test --workspace --no-run`, about 133 crates) measured on
+standard (2-core) and high-mem (8-core) CPU VMs:
+
+| VM | Build directory | Crates compiled | Time | Units |
+|---|---|---|---|---|
+| high-mem hm2, newly created, 2026-11-26 | empty | 133 | 852 s (14.2 min) | about 0.062 |
+| standard std1, 2026-11-25 | empty | 115 | 61 min 43 s | about 0.082 |
+| standard std2, 2026-11-26 | empty | 134 | 65 min 48 s | about 0.088 |
+| standard, 2026-11-22 (smaller workspace) | empty | — | 3764 s (62.7 min) | about 0.084 |
+
+On a cold build the 2-core VM is about 4.6 times slower (3948 s against 852 s for the same
+crate count). That is more than the factor of 4 in cores. The probable reasons, not measured
+apart: the high-mem VM also runs 8 rustc front-end threads (`-Zunstable-options
+--jobs-frontend=8`, about 14% faster cold), and the 2-core VM has a quarter of the memory. Units are rate × time, so the
+standard VM, at 0.08/hr against 0.26/hr, still costs about 40% more per cold build and keeps
+the client waiting an hour. The units are computed from the rates, not read from `colab usage`.
+
+- Use a high-mem VM, or an L4 (12 cores) or TPU v5e-1 (24 cores) VM for its host CPU, for any
+  job that compiles much. Use a standard VM only for jobs whose build is already in place.
+  A standard VM that is still compiling after an hour is normal, not a hang.
+- The measured front-end speedup was at 8 threads. A 12- or 24-core VM gets 8 too, since
+  more threads were never measured.
+- A build on a VM that has built the workspace before is much faster. A TPU v5e-1 that had
+  built earlier versions rebuilt all 134 crates in 3 min 58 s. Such numbers are not cold
+  builds; compare cold with cold.
 
 **Timings:** a CPU VM is created in 3 to 5 s; a TPU v6e-1 took about 6 min. A cold VM
 needed about 1 min to install Rust (the pinned nightly of `rust-toolchain.toml` installed
@@ -1144,4 +1181,8 @@ for offloading:
 | An empty variable in `sed -i "/^$n /d"` | Would delete every line of the pool file | Check every value against a pattern first; `set -u` (section 6) |
 | `kill -- -$(cat pgid)` | A pgid file holding 1 would kill every process on the VM; and it misses a command a `timeout` inside the job moved into its own process group | Kill the session, `pkill -s`, and accept only a number greater than 1 (`pkill -s 0` is the caller's session) |
 | `--tpu v5e1` | Not in `colab new --help`, which lists `V5E1` and `V6E1` | Use the spelling the help lists |
+| `colab new --high-mem` with 8 VMs of mixed shapes live (2026-11-26) | `Allocation refused (precondition failed)` for 18 min, though only 3 high-mem VMs were live and 5 had been measured as the limit | Treat the message as "full, for some limit": reap idle VMs, retry every 15 s, keep one retry loop per client (section 5) |
+| `pool.sh release hm5; pool.sh reap 0; pool.sh acquire hm x` to get a blank VM (2026-11-26) | `reap` stops VMs idle *longer* than the limit, and hm5 had been idle 0 s, so it was not stopped; `acquire` then handed back the same VM, with 23 h of build directories and a toolchain on it | To get a blank VM: release, wait 2 s or more, `reap 1`, check the "stopped" line, then acquire. Confirm with `uptime; ls /content` on the new VM (a new VM shows only `sample_data`) |
+| A VM a client released, thought by its client to be still running a job (2026-11-26) | An agent waited on a job that had never started: its launcher was still retrying `acquire` against the full account. `pool.sh list` showed no VM for that owner | When a client reports waiting on a job, check `pool.sh list` and the job's out directory before believing it |
+| Starting a detached job with `... < /dev/null &` from a local Claude Code session with a hook that blocks `/dev` paths | The hook refused the whole command, so nothing ran | Close stdin with `0<&-` instead: `setsid nohup bash job.sh > log 2>&1 0<&- &` |
 | `colab exec -s N 'ls /content/job; ps -eo pid,args'` (the command as an argument, as with `ssh host cmd`) | Refused before anything runs: `Got unexpected extra argument(s) (...)` and the usage text, exit 2; a loop over VMs prints only usage text, which can be misread as "the VMs are down" (2026-11-23) | Pipe the cell on stdin: `printf '%%%%bash\nls /content/job\n' \| colab --auth=adc exec -s N --timeout 90`. Every literal `%` in the body is doubled too (`date +%%H`, `--time-style=+%%H:%%M`), since the body is `printf`'s format string; or write the cell to a file and pass `-f` |
