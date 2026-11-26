@@ -352,6 +352,47 @@ the client waiting an hour. The units are computed from the rates, not read from
   built earlier versions rebuilt all 134 crates in 3 min 58 s. Such numbers are not cold
   builds; compare cold with cold.
 
+### What a kept build directory saves when the source changes
+
+Measured on hm2 (high-mem, 8 cores, 8 front-end threads), 2026-11-26. One build directory was
+kept throughout, and a git clone of the repository was moved from commit to commit with
+`git checkout`. Each build was `cargo test --workspace --no-run`.
+
+| Step | Files changed | Crates compiled | Time |
+|---|---|---|---|
+| build an old commit, empty build directory | — | 133 | 852 s |
+| move to the head, 2 days later | 291 | 25 | 856 s |
+| the same commit again, no change | 0 | 0 | 0.6 s |
+| back one commit | 6, one of them in the bottom crate of the graph | 20 | 289 s |
+| forward again | 6 | 20 | 293 s |
+
+Running tests after a build recompiled nothing (0 crates, each run 0.5 to 13 s).
+
+- Cargo recompiles only the crates whose source changed and the crates that depend on them.
+  This holds across `git checkout`: cargo compares each local source file's modification time
+  with the time of its last build, and a checkout rewrites only the files that differ. (So
+  copy a tree onto the VM with a tool that leaves unchanged files untouched, such as
+  `rsync -c`, never by unpacking it afresh, which gives every file a new time.)
+- A large step gains nothing. The 25 crates of the 291-file step were the deepest ones, so
+  the build took as long as a cold one.
+- A small step is about 3 times faster than a cold build, even when it changes the crate at
+  the bottom of the graph.
+- So keep a VM's build directory, and send it jobs whose source is close to what it built
+  last: the same client's next commit, or the current main branch plus one change. Section 6
+  does this.
+
+**Clone with `--depth 1`.** History is needed only to move between commits, as this
+measurement did (a full clone took 34 s on the VM, with an 89 MB `.git`; a `--depth 1` clone of
+the same repository took 4.4 s on a local machine, with a 19 MB `.git`). For one commit:
+
+```bash
+git clone --depth 1 <url> /content/repo
+git -C /content/repo fetch --depth 1 origin <sha> && git -C /content/repo checkout -q --detach <sha>
+```
+
+GitHub served an older commit, not a branch tip, to `fetch --depth 1` by its full sha (1.8 s
+for the fetch and checkout, 2026-11-26).
+
 **Timings:** a CPU VM is created in 3 to 5 s; a TPU v6e-1 took about 6 min. A cold VM
 needed about 1 min to install Rust (the pinned nightly of `rust-toolchain.toml` installed
 without trouble) and 6 to 10.5 min to build the workspace with tests (8 cores; a release build
@@ -396,8 +437,11 @@ working at once) send jobs to Colab:
    means clients cannot simply each create their own.
 
 The pool answers all three: a VM is created once, handed from job to job with its
-toolchain and build cache intact, given to one client at a time, and stopped after one
-minute with no job.
+toolchain and build cache intact, and given to one client at a time. A VM of a costly shape
+is stopped after one minute with no job. A VM of a kept shape (by default the 8-core high-mem
+CPU VM, at 0.26 units/hr) is never stopped by the pool. It stays alive and is rebuilt at the
+main branch while idle, so every job sent to it compiles only what its own change touches
+(section 5 has the measurements).
 
 ### How it works
 
@@ -414,8 +458,10 @@ A VM moves through these states:
 
     (none) --acquire, no idle VM of the shape--> colab new --> busy (owner = caller)
     idle   --acquire------------------------------------------> busy (owner = caller)
-    busy   --release: kill the job, delete /content/job------> idle (time stamped)
-    idle   --reap: idle longer than the limit----------------> colab stop --> (none)
+    busy   --release: kill the job, delete /content/job------> idle (time stamped, owner kept)
+    idle   --reap: idle longer than the limit, shape not kept--> colab stop --> (none)
+    idle   --claim by prewarm.sh------------------------------> busy (owner = prewarm)
+    busy (prewarm) --acquire, no idle VM: stop the prewarm job--> busy (owner = caller)
 
 - **`acquire <shape> <owner>`** prints the name of a VM that the caller now holds alone.
   It takes an idle VM of that shape if there is one, and otherwise creates one named
@@ -436,10 +482,21 @@ A VM moves through these states:
   reaped.
 - **`list`** prints the file.
 
-So a VM's life is: created by the first `acquire` of its shape; reused by every later
-`acquire` that comes within a minute of a `release`; stopped one minute after its last
-release. To keep the build cache warm, queue work so that each released VM is acquired
-again within that minute.
+So a VM of a shape that is not kept is created by the first `acquire` of its shape, reused by
+every later `acquire` that comes within a minute of a `release`, and stopped one minute after
+its last release. A VM of a kept shape lives until Colab ends it (at most 12 hours):
+
+- **`acquire` prefers the VM the owner used last.** Its build directory holds that owner's
+  tree, so the owner's next commit rebuilds only what that commit changed.
+- **`keepalive [seconds]`** runs a trivial cell on each idle kept VM that nothing has reached
+  for that long. Colab ended VMs after about 45 min with no cell. That keepalive cells prevent
+  this is inferred, not measured.
+- **`prewarm.sh`** (below) rebuilds an idle kept VM at the main branch after 5 min idle. Then
+  a job from any branch close to main rebuilds only its own change. A prewarm build is
+  stopped at once when a client needs the VM.
+
+The cost is 0.26 units/hr for each kept high-mem VM, whether busy or idle: 6.2 units a day
+each.
 
 ### Limits of this design
 
@@ -477,10 +534,21 @@ To measure a shape's limit, acquire VMs of that shape until `new` fails, and rea
 #   pool.sh acquire <shape> <owner>   prints a VM name; exit 3 when no VM of that shape can be had
 #                                     exit 4 when <owner> already holds a busy VM (one VM per client;
 #                                     owners matching $COLAB_POOL_MULTI, an extended regex, may hold several)
-#   pool.sh release <name>            kills the job, deletes /content/job on the VM, marks it idle
-#   pool.sh reap [seconds]            stops every VM idle longer than <seconds> (default 60)
+#   pool.sh release <name> [<owner>]  kills the job, deletes /content/job on the VM, marks it idle;
+#                                     with <owner>, only when <owner> still holds it (prewarm.sh)
+#   pool.sh reap [seconds]            stops every VM idle longer than <seconds> (default 60), except
+#                                     the kept shapes (see kept)
+#   pool.sh claim <name> <owner>      marks the idle VM <name> busy for <owner> (prewarm.sh); exit 3
+#                                     when it is not idle
+#   pool.sh keepalive [seconds]       runs a trivial cell on each idle kept VM not reached for
+#                                     <seconds> (default 600), so Colab does not end it as idle
 #   pool.sh list
 # acquire, release and reap first delete each VM gone from the Colab session list (see live).
+# Kept VMs: a VM of a kept shape (POOL_KEEP, an extended regex, default ^hm$; empty keeps none) is
+# never stopped by reap, so its build directory stays and the next job compiles only what changed.
+# release keeps the last owner in column 4, and acquire gives an owner the idle VM it used last
+# before any other. An idle kept VM can be rebuilt at the main branch by prewarm.sh (owner
+# "prewarm"); acquire takes a VM from a prewarm job when no VM of the shape is idle (stop_prewarm).
 # Every value is checked before use; an empty or malformed one stops the script with exit 2.
 # An empty VM name would make the sed patterns below match every line, and an empty owner would shift the file's columns.
 set -u -o pipefail
@@ -498,6 +566,30 @@ touch "$P" || die "cannot create $P"
 flag() { case $1 in hm) echo --high-mem;; std) echo;; l4) echo --gpu L4;; v5e) echo --tpu V5E1;; *) return 1;; esac; }
 name_ok() { [[ ${1-} =~ ^(hm|std|l4|v5e)[0-9]+$ ]]; }
 now() { local x; x=$(date +%s) && [[ $x =~ ^[0-9]+$ ]] || die "date +%s gave '${x-}'"; echo "$x"; }
+KEEP_RE=${POOL_KEEP-^hm$}
+# An empty regex matches every string, so an empty POOL_KEEP is tested first.
+kept() { [ -n "$KEEP_RE" ] && [[ ${1-} =~ $KEEP_RE ]]; }
+# stop_prewarm <vm>: stops the local prewarm job on <vm>, so that acquire can hand the VM on.
+# prewarm-run.sh writes its pid, which is its session id (it runs under setsid), to
+# $D/prewarm/<vm>.sid. The whole session is stopped, job.sh with it: a job.sh left polling would
+# read the next job's /content/job/pgid as its own and kill that job at its limit. By session, not
+# by process group: GNU timeout moves each colab call into a process group of its own. A session
+# is stopped only when one of its processes is this VM's prewarm-run.sh or job.sh, since a session
+# id can be reused once its processes end. Returns 0 when no prewarm process is left.
+stop_prewarm() {
+  local v=$1 f=$D/prewarm/$1.sid sid p hit=0 i
+  [ -s "$f" ] || return 0
+  sid=$(cat "$f")
+  [[ $sid =~ ^[0-9]+$ ]] && [ "$sid" -gt 1 ] || return 0
+  for p in $(pgrep -s "$sid"); do
+    tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | command grep -a -q -E "(prewarm-run|job)\.sh $v " && hit=1
+  done
+  [ $hit = 1 ] || return 0
+  pkill -TERM -s "$sid"
+  for i in 1 2 3 4 5; do pgrep -s "$sid" > /dev/null || return 0; sleep 1; done
+  pkill -KILL -s "$sid"; sleep 1
+  ! pgrep -s "$sid" > /dev/null
+}
 # A VM can drop out of the Colab session list while pool.tsv still holds it. live prints the
 # names in `colab sessions`, one a line, and nothing else of that list (it holds the endpoints);
 # it fails when the list could not be read, and then no line is deleted for want of a name. An
@@ -529,7 +621,7 @@ reap() {
     if ! name_ok "$n" || ! [[ ${t-} =~ ^[0-9]+$ ]]; then
       echo "pool.sh: skipping malformed line: $n $s $st $o $t" >&2; continue
     fi
-    if [ "$st" = idle ] && [ $((now - t)) -gt "$lim" ]; then
+    if [ "$st" = idle ] && ! kept "$s" && [ $((now - t)) -gt "$lim" ]; then
       colab --auth=adc stop -s "$n" > /dev/null 2>&1
       sed -i "/^$n /d" "$P"
       echo "stopped $n (idle $((now - t)) s)" >&2
@@ -555,7 +647,16 @@ acquire)
   # No VM gone from the session list is handed out. When the list cannot be read, an idle VM is
   # still handed out; job.sh then ends with exit 5 if it is gone.
   if names=$(live); then prune "$names"; else echo "pool.sh: cannot read the Colab session list" >&2; fi
-  n=$(awk -v s="$shape" '$2 == s && $3 == "idle" {print $1; exit}' "$P")
+  # First the idle VM this owner used last (its tree and build are there), then any idle VM, then a
+  # VM running a prewarm build (stopped first, see stop_prewarm), then a new VM.
+  n=$(awk -v s="$shape" -v o="$owner" '$2 == s && $3 == "idle" && $4 == o {print $1; exit}' "$P")
+  [ -n "$n" ] || n=$(awk -v s="$shape" '$2 == s && $3 == "idle" {print $1; exit}' "$P")
+  if [ -z "$n" ] && [ "$owner" != prewarm ]; then
+    for v in $(awk -v s="$shape" '$2 == s && $3 == "busy" && $4 == "prewarm" {print $1}' "$P"); do
+      name_ok "$v" || continue
+      if stop_prewarm "$v"; then n=$v; echo "pool.sh: stopped the prewarm build on $v for $owner" >&2; break; fi
+    done
+  fi
   if [ -n "$n" ]; then
     name_ok "$n" || die "malformed VM name '$n' in $P"
     sed -i "s/^$n .*/$n $shape busy $owner $ts/" "$P"; echo "$n"; exit 0
@@ -569,9 +670,13 @@ acquire)
   fi
   tail -1 "$D/new_$n.log" >&2; exit 3;;
 release)
-  n=${2-}
+  n=${2-}; want=${3-}
   name_ok "$n" || die "release: bad VM name '$n'"
+  [ -z "$want" ] || [[ $want =~ ^[A-Za-z0-9._-]+$ ]] || die "release: bad owner '$want'"
   command grep -a -q "^$n [a-z0-9]* busy " "$P" || die "release: $n is not a busy VM in $P"
+  # held <owner>: 0 when <owner> holds <name>. Checked before the clearing and again under the lock.
+  held() { awk -v n="$n" -v o="$1" '$1 == n && $3 == "busy" && $4 == o {f = 1} END {exit !f}' "$P"; }
+  if [ -n "$want" ] && ! held "$want"; then echo "pool.sh: $n is no longer held by $want; left as it is" >&2; exit 0; fi
   # A VM gone from the session list is deleted, not marked idle.
   if names=$(live) && ! command grep -a -q -x "$n" <<<"$names"; then
     exec 9>"$K"; flock 9 || die "cannot lock $K"
@@ -586,11 +691,42 @@ release)
   printf '%%%%bash\np=$(cat /content/job/pgid 2>/dev/null)\nif [[ $p =~ ^[0-9]+$ ]] && [ "$p" -gt 1 ]; then pkill -s $p; fi\nsleep 2\nrm -rf --one-file-system --preserve-root=all /content/job\n' |
     timeout 120 colab --auth=adc exec -s "$n" --timeout 100 > /dev/null 2>&1
   exec 9>"$K"; flock 9 || die "cannot lock $K"
+  if [ -n "$want" ] && ! held "$want"; then echo "pool.sh: $n is no longer held by $want; left as it is" >&2; exit 0; fi
   ts=$(now) || exit 2
-  sed -i "s/^$n \([a-z0-9]*\) busy .*/$n \1 idle - $ts/" "$P";;
+  # The owner stays in column 4 for acquire's choice of the VM an owner used last.
+  sed -i "s/^$n \([a-z0-9]*\) busy \([^ ]*\) .*/$n \1 idle \2 $ts/" "$P";;
 reap) exec 9>"$K"; flock 9 || die "cannot lock $K"; reap "${2:-60}";;
+claim)
+  n=${2-}; owner=${3-}
+  name_ok "$n" || die "claim: bad VM name '$n'"
+  [[ $owner =~ ^[A-Za-z0-9._-]+$ ]] || die "claim: bad owner '$owner'"
+  exec 9>"$K"; flock 9 || die "cannot lock $K"
+  command grep -a -q "^$n [a-z0-9]* idle " "$P" || exit 3
+  ts=$(now) || exit 2
+  sed -i "s/^$n \([a-z0-9]*\) idle .*/$n \1 busy $owner $ts/" "$P";;
+keepalive)
+  # Colab ends a VM that runs no cell for about 45 min. Its status reads IDLE even while a
+  # detached job runs, so the timer is taken to count from the last exec call (inferred, not
+  # measured: every VM a job.sh polls has stayed up). Busy VMs are reached by their job's polls.
+  # The time each VM was last reached is in alive.tsv (<name> <epoch>), apart from pool.tsv's
+  # column 5, which prewarm.sh reads as the time the VM went idle.
+  lim=${2:-600}
+  [[ $lim =~ ^[0-9]+$ ]] || die "keepalive: seconds must be a number, got '$lim'"
+  A=$D/alive.tsv; touch "$A" || die "cannot create $A"
+  now=$(now) || exit 2
+  while read -r n s st o t; do
+    name_ok "$n" && [ "$st" = idle ] && kept "$s" && [[ ${t-} =~ ^[0-9]+$ ]] || continue
+    last=$(awk -v n="$n" '$1 == n {print $2}' "$A" | tail -1)
+    [[ $last =~ ^[0-9]+$ ]] && [ "$last" -gt "$t" ] || last=$t
+    [ $((now - last)) -gt "$lim" ] || continue
+    if printf '%%%%bash\ntrue\n' | timeout -k 5 60 colab --auth=adc exec -s "$n" --timeout 45 > /dev/null 2>&1; then
+      { flock 9; sed -i "/^$n /d" "$A"; echo "$n $(now)" >> "$A"; } 9>"$K"
+    else
+      echo "pool.sh: keepalive cell on $n failed" >&2
+    fi
+  done < <(cat "$P");;
 list) cat "$P";;
-*) sed -n '2,10p' "$0"; exit 2;;
+*) sed -n '2,23p' "$0"; exit 2;;
 esac
 ```
 
@@ -600,10 +736,83 @@ Start it once, in the background, and leave it running while the pool is in use:
 
 ```bash
 #!/bin/bash
-# Stops pooled VMs idle for more than 60 s, checking every 15 s.
+# Every 15 s: stops pooled VMs idle for more than 60 s (except the kept shapes), runs a trivial
+# cell on each idle kept VM not reached for 10 min, and starts a prewarm build if one is due.
 set -u
 d=$(dirname "$0") && [ -x "$d/pool.sh" ] || { echo "reaper.sh: no pool.sh next to $0" >&2; exit 2; }
-while :; do "$d/pool.sh" reap 60; sleep 15; done
+while :; do
+  "$d/pool.sh" reap 60
+  "$d/pool.sh" keepalive 600
+  [ -x "$d/prewarm.sh" ] && "$d/prewarm.sh"
+  sleep 15
+done
+```
+
+### `prewarm.sh` and `prewarm-run.sh`: keep idle kept VMs built at the main branch
+
+`prewarm.sh` runs from `reaper.sh`. It starts at most one prewarm job a round and returns at
+once. It takes an idle VM of shape `hm` that went idle at least `PREWARM_IDLE` seconds ago
+(default 300, so a client's next job within 5 min still finds its own tree) and is not already
+built at the current main. It moves a clean worktree to that commit and runs `job.sh` there
+with one small test line, so that job.sh's prebuild builds every test binary. The source is
+the worktree `PREWARM_TREE` of the repository `PREWARM_REPO`, moved with
+`git switch --detach`, which refuses to overwrite a local change. Nothing else may write to
+that worktree. The ref read is `origin/main`, as last fetched; fetch it from time to time if
+pushes come from elsewhere.
+
+```bash
+#!/bin/bash
+set -u -o pipefail
+D=${COLAB_POOL_DIR:-$HOME/.colab-pool}; PW=$D/prewarm
+R=${PREWARM_REPO:?absolute path of the repository}; T=${PREWARM_TREE:?absolute path of the prewarm worktree}
+J=$(dirname "$0")
+mkdir -p "$PW" || exit 2
+# One launch at a time: the worktree is moved only after the last launch packed its source.
+exec 8>"$PW/lock"; flock -n 8 || exit 0
+sha=$(git -C "$R" rev-parse --verify -q origin/main) && [[ $sha =~ ^[0-9a-f]{40}$ ]] || exit 0
+now=$(date +%s); [[ $now =~ ^[0-9]+$ ]] || exit 2
+touch "$PW/built.tsv"
+vm=$(awk -v now="$now" -v sha="$sha" -v idle="${PREWARM_IDLE:-300}" -v f="$PW/built.tsv" '
+  BEGIN { while ((getline l < f) > 0) { split(l, a, " "); b[a[1]] = a[2] } }
+  $2 == "hm" && $3 == "idle" && now - $5 >= idle && !($4 == "prewarm" && b[$1] == sha) { print $1; exit }' "$D/pool.tsv")
+[ -n "$vm" ] || exit 0
+[[ $vm =~ ^hm[0-9]+$ ]] || exit 2
+"$J/pool.sh" claim "$vm" prewarm || exit 0
+if [ -d "$T" ]; then git -C "$T" switch -q --detach "$sha"; else git -C "$R" worktree add -q --detach "$T" "$sha"; fi ||
+  { echo "prewarm: cannot move $T to $sha" >&2; "$J/pool.sh" release "$vm" prewarm; exit 2; }
+[ "$(git -C "$T" rev-parse HEAD)" = "$sha" ] && [ -z "$(git -C "$T" status --porcelain)" ] ||
+  { echo "prewarm: $T is not a clean checkout of $sha" >&2; "$J/pool.sh" release "$vm" prewarm; exit 2; }
+# Any one quick test line of the workspace; job.sh builds the whole workspace before it.
+printf '%s\n' "${PREWARM_TEST:?one cargo test line, e.g. -p mycrate --test smoke}" > "$PW/tests.txt"
+out=$PW/out-$vm-$now
+: > "$PW/empty"
+setsid bash "$J/prewarm-run.sh" "$vm" "$sha" "$out" "$T" > "$PW/run-$vm.log" 2>&1 < "$PW/empty" &
+# Hold the lock until job.sh packed the worktree: it writes extra.tgz (empty when there is no
+# extra checkout) only after src.tgz is complete.
+for i in $(seq 1 120); do
+  [ -s "$out/extra.tgz" ] && break
+  kill -0 $! 2> /dev/null || break
+  sleep 1
+done
+echo "prewarm: $vm building $sha (out $out)"
+```
+
+`prewarm-run.sh` writes its own pid to `$D/prewarm/<vm>.sid` (under `setsid` the pid is the
+session id, which `stop_prewarm` stops), runs the job, records the result so that a broken
+main is not rebuilt every round, and releases the VM only if the prewarm still holds it:
+
+```bash
+#!/bin/bash
+set -u -o pipefail
+D=${COLAB_POOL_DIR:-$HOME/.colab-pool}; PW=$D/prewarm; J=$(dirname "$0")
+vm=${1-}; sha=${2-}; out=${3-}; T=${4-}
+[[ $vm =~ ^hm[0-9]+$ ]] && [[ $sha =~ ^[0-9a-f]{40}$ ]] && [[ $out == "$PW"/out-* ]] && [ -d "$T" ] ||
+  { echo "prewarm-run: bad arguments" >&2; exit 2; }
+echo $$ > "$PW/$vm.sid"
+"$J/job.sh" "$vm" "$T" "$out" "$PW/tests.txt"; rc=$?
+{ flock 7; sed -i "/^$vm /d" "$PW/built.tsv"; echo "$vm $sha $(date +%s) $rc" >> "$PW/built.tsv"; } 7>"$PW/built.lock"
+echo "prewarm-run: $vm at $sha, job.sh exit $rc"
+"$J/pool.sh" release "$vm" prewarm
 ```
 
 `nohup ./reaper.sh >> "$HOME/.colab-pool/reaper.log" 2>&1 &`. When all work is done, stop
