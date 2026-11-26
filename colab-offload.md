@@ -721,7 +721,7 @@ nc=$(nproc); [[ $nc =~ ^[0-9]+$ ]] || nc=1
 # 14% faster (zed-impl, 2026-11-18). A VM runs one job, so the threads do not compete with other
 # builds. RUSTFLAGS replaces a project's build.rustflags in .cargo/config.toml: copy any flags the
 # project sets there into this line.
-fe=1; [ "$nc" -ge 8 ] && fe=$nc
+fe=1; [ "$nc" -ge 8 ] && fe=8   # 8 is the count measured; a larger VM also gets 8
 export RUSTFLAGS="-Zunstable-options --jobs-frontend=$fe"
 export CARGO_TARGET_DIR=/content/target CARGO_BUILD_JOBS=$nc EXTRA_DIR=/content/extra
 # hm and std Colab VMs have no hardware counter of instructions (l4 and v5e not checked; dmesg: "no PMU driver, software events
