@@ -543,6 +543,15 @@ as `job.sh` and writes the same output layout, so a client can send one job to e
   change until it ends; the build directory must be seeded first; tool paths print relative to
   the worktree; and tools the VM image has (valgrind, perf) may be missing. Never compare an
   instruction count taken locally with one taken on a VM.
+- **Missing tools refuse the lines that need them:** at its start the client looks up each tool
+  the VM installs and some tests need (here `ld.lld` and `valgrind`). While one is missing, a line
+  whose text names a group that needs it (an ERE per tool) is not run: exit code 3 in
+  `summary.tsv`, and its log names the tool and says to run the line on a VM. A failed line that
+  names no such group (a whole package) runs, and gets a note in its log when the tests' own
+  missing-tool message is in it. The job exits 3 when nothing failed but a line was refused.
+  Without this, those tests fail locally for want of a tool, and their failures read as code
+  failures (FAIL-local-job-no-ld, 2026-11-27; test: test-local-job.sh, 10 checks, 6 fail on the
+  version without it).
 - **Several jobs in a row:** a client with jobs on several worktrees can queue them in one
   background shell, one job at a time, each exit code in a status file that a monitor reads
   (dry-affine2, 2026-11-27; nine jobs ran this way):
