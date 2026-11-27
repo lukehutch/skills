@@ -472,6 +472,21 @@ A VM moves through these states:
   its next job on it, so that a client taking a second VM never keeps the others waiting.
   Owners matching the extended regex `COLAB_POOL_MULTI` (for example a test runner that spreads
   its pieces over several VMs) are exempt.
+  `POOL_VM=<name>` asks for that one VM: acquire gives it if it is idle and of the shape, and
+  otherwise exits 3 without creating a VM, so a caller's retry loop waits for it. This reruns a
+  merge check on a chosen VM: `POOL_VM=hm1 zrun tools/merge_check.sh ...` from the worktree
+  (zrun passes the environment through to farm_run.sh's acquire).
+- **Unhealthy VMs.** At the end of its setup, job.sh's run.sh writes `out/health.log`
+  (ptrace_scope, CapEff, Seccomp, TracerPid, nproc, load) and an `unhealthy: <cause>` line when
+  run.sh's process is traced by another process, or when `gdb --batch -ex run --args /bin/true`
+  prints `ptrace: Operation not permitted`. After the job, job.sh copies those lines to
+  `unhealthy/<vm>` in the pool directory and says so. acquire then gives that VM to no owner
+  named `merge-check-*`, with a message naming the cause; other jobs may still take it, and a
+  `POOL_VM` request gets it with a warning. A mark counts only while it is newer than
+  `new_<vm>.log`, so a VM made again under the same name starts clean, and no script deletes
+  marks. Why: on 2026-11-27, two merge checks on hm3 failed 9 gdb tests with "ptrace:
+  Operation not permitted" and stopped 5 pieces at their 20 s limit, while the same pieces
+  passed on hm1. The VM's `/proc/sys` is read-only, so a job cannot lower ptrace_scope.
 - **`release <name>`** is called by the client when its job is finished, also when the job
   failed. On the VM it kills the job's process group (the job wrote its process group id to
   `/content/job/pgid`) and deletes `/content/job`. It does **not** delete the toolchain
