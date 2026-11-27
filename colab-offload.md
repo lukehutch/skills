@@ -523,6 +523,27 @@ each.
 To measure a shape's limit, acquire VMs of that shape until `new` fails, and read
 `colab usage` with each running alone to get its rate. Stop all of them afterward.
 
+### When the pool is too small: a local core semaphore beside it
+
+When Colab refuses more VMs, clients wait in `acquire` for a long time (30+ minutes with 3 VMs
+and 12 clients, 2026-11-27). A fixed set of local cores, given out as a bounded semaphore, takes
+the overflow. `local-job.sh <label> <worktree> <out dir> <tests file>` reads the same tests file
+as `job.sh` and writes the same output layout, so a client can send one job to either.
+
+- **State:** `holders.tsv` (label, pid, CPUs, epoch) and `queue.tsv` (label, pid, start epoch),
+  both changed under one flock. A line whose pid is dead is dropped at the next look, so a killed
+  client never keeps its cores.
+- **Grants per line, not per job:** before each line of the tests file the client queues, ordered
+  by job start time, and at the head takes max(1, N / (holders + waiters)) cores once that many
+  are free; it gives them back when the line ends. So the shares follow the demand at every line
+  boundary. A running line is never stopped, so long jobs should be split into lines.
+- **Each line runs pinned** (`taskset -c <cpus>`), with `CARGO_BUILD_JOBS` and the test threads
+  set to the share, and the share exported for the line's own use.
+- **Differences from a VM job:** the job reads the worktree in place, so the worktree must not
+  change until it ends; the build directory must be seeded first; tool paths print relative to
+  the worktree; and tools the VM image has (valgrind, perf) may be missing. Never compare an
+  instruction count taken locally with one taken on a VM.
+
 ### `pool.sh`
 
 ```bash
