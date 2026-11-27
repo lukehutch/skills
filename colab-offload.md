@@ -543,6 +543,27 @@ as `job.sh` and writes the same output layout, so a client can send one job to e
   change until it ends; the build directory must be seeded first; tool paths print relative to
   the worktree; and tools the VM image has (valgrind, perf) may be missing. Never compare an
   instruction count taken locally with one taken on a VM.
+- **Several jobs in a row:** a client with jobs on several worktrees can queue them in one
+  background shell, one job at a time, each exit code in a status file that a monitor reads
+  (dry-affine2, 2026-11-27; nine jobs ran this way):
+
+  ```bash
+  #!/bin/bash
+  # runlocal.sh N NAME1 TREE1 TESTS1 [NAME2 TREE2 TESTS2 ...]: runs each job through local-job.sh,
+  # one at a time, its logs in $S/NAME; each exit code goes into $S/N.vm, then a line "done".
+  S=<your scratch directory>
+  N=$1; shift
+  echo "local start $(date -u +%H:%M:%SZ)" > $S/$N.vm
+  while [ $# -ge 3 ]; do
+    /home/luke/Work/wt/local/local-job.sh <label> "$2" $S/$1 "$3" > $S/$1.log 2>&1
+    echo "$1 rc=$? $(date -u +%H:%M:%SZ)" >> $S/$N.vm
+    shift 3
+  done
+  echo "done $(date -u +%H:%M:%SZ)" >> $S/$N.vm
+  ```
+
+  A second queue waits for the first with `until command grep -a -q '^done' $S/1.vm; do sleep
+  30; done`, so the client never holds two shares of the cores at once.
 
 ### `pool.sh`
 
