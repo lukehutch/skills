@@ -534,9 +534,12 @@ as `job.sh` and writes the same output layout, so a client can send one job to e
   both changed under one flock. A line whose pid is dead is dropped at the next look, so a killed
   client never keeps its cores.
 - **Grants per line, not per job:** before each line of the tests file the client queues, ordered
-  by job start time, and at the head takes max(1, N / (holders + waiters)) cores once that many
-  are free; it gives them back when the line ends. So the shares follow the demand at every line
-  boundary. A running line is never stopped, so long jobs should be split into lines.
+  by job start time, and at the head takes min(N/2, max(1, N / (holders + waiters))) cores once
+  that many are free; it gives them back when the line ends. So the shares follow the demand at
+  every line boundary. A running line is never stopped, so long jobs should be split into lines,
+  and one grant is at most half the cores: without that cap a client alone took all N for one
+  long line and every later client waited for it to end (25 jobs for 18+ minutes,
+  LOCAL-share-long-line-hog, 2026-11-27; test: test-local-job.sh case D).
 - **Each line runs pinned** (`taskset -c <cpus>`), with `CARGO_BUILD_JOBS` and the test threads
   set to the share, and the share exported for the line's own use.
 - **Differences from a VM job:** the job reads the worktree in place, so the worktree must not
