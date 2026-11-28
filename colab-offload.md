@@ -554,7 +554,12 @@ as `job.sh` and writes the same output layout, so a client can send one job to e
   every line boundary. A running line is never stopped, so long jobs should be split into lines,
   and one grant is at most half the cores: without that cap a client alone took all N for one
   long line and every later client waited for it to end (25 jobs for 18+ minutes,
-  LOCAL-share-long-line-hog, 2026-11-27; test: test-local-job.sh case D).
+  LOCAL-share-long-line-hog, 2026-11-27; test: test-local-job.sh case D). A build line (`cargo
+  build`, or a line with `--no-run`) gets at least 2 cores, and like any grant waits until they
+  are free, so no more than N are held: a share is fixed when its line starts, and with 8 or more
+  jobs queued a build line got 1 core and kept it after the queue drained (`cargo build -p
+  zed-native --bin zedc`, 20 min 07 s on one core, LOCAL-build-line-floor, 2026-11-28; test:
+  test-local-job.sh case E).
 - **Each line runs pinned** (`taskset -c <cpus>`), with `CARGO_BUILD_JOBS` and the test threads
   set to the share, and the share exported for the line's own use.
 - **Differences from a VM job:** the job reads the worktree in place, so the worktree must not
